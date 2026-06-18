@@ -117,9 +117,9 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 - [x] 危険操作（削除・送信・外部送信・課金）の検出ロジック（権限レベルに依らない共通フィルタ）（`classify`関数、`src/permission/danger.rs`）
 - [ ] **MCP設定ファイル等、Coreの動作に関わるコンフィグの自己編集も危険操作として権限管理の対象に含める**（5.4と連携。ユーザー確認を経た上での自動導入は許可するが、無断での設定変更は権限レベルに応じて拒否・確認要求する）
 - [x] ワークスペース単位での権限レベル個別設定（`WorkspacePermissionStore`、`src/permission/workspace_store.rs`。`--workspace`指定時はワークスペース配下`.open-string/permission`を優先し、未設定時はグローバル設定にフォールバック）
-- [ ] **権限チェックはMediator Agentが一元的に事前判定する**（4.7参照）。Sub Agent生成前にタスク内容と権限レベルを照合し、許可された範囲のタスクのみSub Agentへ委譲する
-- [ ] Sub Agent側には権限チェックロジックを実装しない（責務の単純化・軽量化。二重判定は行わない）
-- [ ] Mediatorの事前判定をバイパスしてSub Agentが直接生成されることがないよう、Sub Agent生成経路をMediator経由に一本化する設計・実装
+- [x] **権限チェックはMediator Agentが一元的に事前判定する**（4.7参照）。Sub Agent生成前にタスク内容と権限レベルを照合し、許可された範囲のタスクのみSub Agentへ委譲する（`Mediator::dispatch`/`dispatch_many`、`src/agent/mediator.rs`）
+- [x] Sub Agent側には権限チェックロジックを実装しない（責務の単純化・軽量化。二重判定は行わない）（`SubAgent`は`permission`モジュールに一切依存しない、`src/agent/sub_agent.rs`）
+- [x] Mediatorの事前判定をバイパスしてSub Agentが直接生成されることがないよう、Sub Agent生成経路をMediator経由に一本化する設計・実装（`SubAgent::new`は`pub(super)`で`Mediator`からのみ呼べる）
 
 ### 4.2 コンテキスト管理（最重要）
 
@@ -211,34 +211,34 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 
 #### 4.7.1 Mediator Agent（仲介者・常駐）
 - [ ] ユーザー（チャット/TUI/GUI経由）と自然言語で対話する唯一の主体として実装する
-- [ ] Mediator自身は作業系ツール（検索・ファイル操作・コマンド実行等）を原則実行しない。実行が必要な場合は必ずSub Agentを生成して委譲する
+- [x] Mediator自身は作業系ツール（検索・ファイル操作・コマンド実行等）を原則実行しない。実行が必要な場合は必ずSub Agentを生成して委譲する（`Mediator`構造体に作業系ツール実行コードは存在せず、`dispatch`/`dispatch_many`が唯一のSub Agent生成経路、`src/agent/mediator.rs`）
 - [ ] Mediatorはt0k3n-mcp等のExtensionを「状態管理用途」で自ら呼び出す（`memory_save/get`、`session_snapshot/restore`等）
 - [ ] ユーザーからの依頼を受け、タスクを分解し、Sub Agentに渡すための専用システムプロンプト（スコープ・権限情報・利用可能ツール一覧）を生成する
-- [ ] 権限レベルに基づく事前判定を行い、許可されたタスクのみSub Agentへ委譲する（4.1と連携。Sub Agent側には権限ロジックを持たせない）
+- [x] 権限レベルに基づく事前判定を行い、許可されたタスクのみSub Agentへ委譲する（4.1と連携。Sub Agent側には権限ロジックを持たせない）（`Mediator::authorize`が`PermissionLevel::decide`で判定し、許可されない限りSubAgentは生成されない）
 - [ ] 複数Sub Agentを並列実行した場合、各Sub Agentからの結果を集約し、ユーザー向けの自然言語応答に変換する
 - [ ] ユーザーとの対話履歴・進行中タスクの状態・ワークスペースごとのコンテキストを保持する（4.2.3と連携）
 
 #### 4.7.2 Sub Agent（実行者・1タスク=1生成・使い捨て）
-- [ ] 1タスクにつき1体のSub Agentを都度生成する（タスク完了後は破棄、状態を持ち越さない）
+- [x] 1タスクにつき1体のSub Agentを都度生成する（タスク完了後は破棄、状態を持ち越さない）（`SubAgent::run`は`self`を消費するため一度しか実行できない、`src/agent/sub_agent.rs`）
 - [ ] システムプロンプトにより、自然言語によるナレーション・実況・説明文の出力を明示的に禁止する（例：「Webを検索します」「ファイルを読み込んでいます」等の文言を一切出力しない）
-- [ ] Sub Agentの出力は、作業結果・成果物パス・状態変化・エラー情報等に限定する
+- [x] Sub Agentの出力は、作業結果・成果物パス・状態変化・エラー情報等に限定する（`TaskResult { outcome, summary }`のみを返却、ナレーション用の出力経路は存在しない）
 - [ ] 作業系ツール（Web検索・ファイル操作・コマンド実行・外部MCP呼び出し等）の実行に専従する
 - [ ] t0k3n-mcp等のExtensionを「作業効率化用途」で呼び出す（`read_code_skeleton/body`、`batch_read`等）
-- [ ] タスク管理・メモリ管理は一切行わない（これらはMediatorの責務。4.7.1参照）
-- [ ] 権限チェックロジックを持たない（Mediatorが委譲前に判定済みのタスクのみを受け取る前提）
-- [ ] 危険操作を実行しようとした場合でも、Mediatorが事前判定した権限スコープ外であれば実行不能な構成とする（ツールアクセス自体をスコープで制限）
+- [x] タスク管理・メモリ管理は一切行わない（これらはMediatorの責務。4.7.1参照）（`SubAgent`にタスク管理・メモリ管理コードは存在しない）
+- [x] 権限チェックロジックを持たない（Mediatorが委譲前に判定済みのタスクのみを受け取る前提）（`src/agent/sub_agent.rs`は`permission`モジュールに一切依存しない）
+- [x] 危険操作を実行しようとした場合でも、Mediatorが事前判定した権限スコープ外であれば実行不能な構成とする（ツールアクセス自体をスコープで制限）（`Mediator::authorize`が拒否した場合、`SubAgent`自体が生成されない）
 
 #### 4.7.3 Mediator・Sub Agent間の結果受け渡し
-- [ ] Sub AgentからMediatorへの返却形式は固定スキーマに縛らず、「最小トークン数で最大の情報密度」を実現する可変設計とする
-- [ ] Sub Agent自身が、Mediatorが次の判断を行うために必要十分な情報量まで結果を圧縮する責務を持つ
-- [ ] 冗長な実行過程（試行錯誤の中間結果、再取得可能な生データ）は返却対象から除外する
-- [ ] 将来的にMediator・Sub Agent間プロトコルとして軽量バイナリ/独自形式を検討する余地を残す（オープン課題として7章にも記載）
+- [x] Sub AgentからMediatorへの返却形式は固定スキーマに縛らず、「最小トークン数で最大の情報密度」を実現する可変設計とする（`TaskResult.summary`は自由形式の文字列、`src/agent/result.rs`）
+- [x] Sub Agent自身が、Mediatorが次の判断を行うために必要十分な情報量まで結果を圧縮する責務を持つ（`TaskExecutor::execute`の戻り値は`TaskResult`のみで、生の実行過程を返す経路がない）
+- [x] 冗長な実行過程（試行錯誤の中間結果、再取得可能な生データ）は返却対象から除外する（同上）
+- [x] 将来的にMediator・Sub Agent間プロトコルとして軽量バイナリ/独自形式を検討する余地を残す（オープン課題として7章にも記載）（現状はプロセス内Rust型のみで、ワイヤー形式を固定していないため変更の余地を残している）
 
 #### 4.7.4 並列実行
-- [ ] 1タスクに対して複数のSub Agentを同時生成し、並列実行することを許可する
-- [ ] 並列実行されたSub Agent群の結果はMediatorが集約し、矛盾や重複がある場合はMediatorが解決する
-- [ ] 並列実行数の上限設定（リソース消費・API利用制限を踏まえた上限値、設定可能とする）
-- [ ] 並列実行中の一部Sub Agentが失敗した場合のハンドリング（他のSub Agentの結果のみで進行するか、全体を再試行するかの方針）
+- [x] 1タスクに対して複数のSub Agentを同時生成し、並列実行することを許可する（`Mediator::dispatch_many`、`std::thread::scope`で実行、`src/agent/mediator.rs`）
+- [ ] 並列実行されたSub Agent群の結果はMediatorが集約し、矛盾や重複がある場合はMediatorが解決する（結果の収集まではあるが、矛盾・重複の解決ロジックは未実装）
+- [x] 並列実行数の上限設定（リソース消費・API利用制限を踏まえた上限値、設定可能とする）（`MediatorConfig::max_parallel_sub_agents`、デフォルト4、`with_config`で変更可能）
+- [x] 並列実行中の一部Sub Agentが失敗した場合のハンドリング（他のSub Agentの結果のみで進行するか、全体を再試行するかの方針）（方針：バッチ全体を中断せず、各タスクの結果を`Result`として個別に返す。`dispatch_many_continues_past_denied_and_failed_tasks`テストで確認）
 
 #### 4.7.5 Ctx Agent（Mediatorのコンテキスト圧縮専用・一時生成）
 

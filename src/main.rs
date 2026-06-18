@@ -1,6 +1,12 @@
+mod agent;
 mod auth;
 mod permission;
+mod prompt;
 
+use agent::{
+    CliConfirmationPrompt, DispatchError, EchoTaskExecutor, Mediator, MediatorConfig, Task,
+    TaskOutcome,
+};
 use auth::{AnthropicApiKeyProvider, AuthProvider, validate_api_key_format};
 use clap::{Parser, Subcommand};
 use permission::{
@@ -28,6 +34,11 @@ enum Command {
     Permission {
         #[command(subcommand)]
         action: PermissionAction,
+    },
+    /// Run a task through the Mediator/Sub Agent pipeline (4.7)
+    Agent {
+        #[command(subcommand)]
+        action: AgentAction,
     },
 }
 
@@ -64,6 +75,40 @@ enum PermissionAction {
         /// global default
         #[arg(long)]
         workspace: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentAction {
+    /// Run a single task through the Mediator's permission pre-check and a
+    /// disposable Sub Agent. Until a real LLM-backed executor lands, this
+    /// echoes the task description back as the result, so it's a way to
+    /// exercise the permission/confirmation/audit-log pipeline end to end.
+    RunTask {
+        description: String,
+        /// Mark the task as read-only (auto-allowed under high-protect)
+        #[arg(long)]
+        read_only: bool,
+        /// Run the permission pre-check against this workspace's override
+        /// instead of the global default
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Run several tasks as parallel Sub Agents (4.7.4)
+    RunTasks {
+        /// One or more task descriptions, each dispatched as its own task
+        #[arg(required = true)]
+        descriptions: Vec<String>,
+        /// Mark every task as read-only (auto-allowed under high-protect)
+        #[arg(long)]
+        read_only: bool,
+        /// Run the permission pre-check against this workspace's override
+        /// instead of the global default
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+        /// Maximum number of Sub Agents to run at once
+        #[arg(long)]
+        max_parallel: Option<usize>,
     },
 }
 
@@ -105,6 +150,28 @@ fn main() {
                 workspace,
             } => permission_store_for(workspace.as_deref())
                 .and_then(|store| permission_set(store.as_ref(), &audit_logger, level, confirm)),
+        },
+        Command::Agent { action } => match action {
+            AgentAction::RunTask {
+                description,
+                read_only,
+                workspace,
+            } => permission_store_for(workspace.as_deref())
+                .and_then(|store| run_task(store.as_ref(), &audit_logger, description, read_only)),
+            AgentAction::RunTasks {
+                descriptions,
+                read_only,
+                workspace,
+                max_parallel,
+            } => permission_store_for(workspace.as_deref()).and_then(|store| {
+                run_tasks(
+                    store.as_ref(),
+                    &audit_logger,
+                    descriptions,
+                    read_only,
+                    max_parallel,
+                )
+            }),
         },
     };
 
@@ -224,7 +291,7 @@ fn reconfirm_god_mode_if_active(
     eprintln!(
         "warning: god mode is the active permission level (all operations allowed, no confirmation)."
     );
-    let confirmed = prompt_yes_no("Re-confirm god mode for this session? [y/N]: ")
+    let confirmed = prompt::yes_no("Re-confirm god mode for this session? [y/N]: ")
         .map_err(|e| e.to_string())?;
     let decision = if confirmed {
         AuditDecision::ConfirmedByUser
@@ -243,6 +310,82 @@ fn reconfirm_god_mode_if_active(
     Ok(())
 }
 
+fn run_task(
+    store: &dyn PermissionStore,
+    audit_logger: &dyn AuditLogger,
+    description: String,
+    read_only: bool,
+) -> Result<(), String> {
+    let confirmation = CliConfirmationPrompt;
+    let mediator = Mediator::new(store, &confirmation, audit_logger);
+    let task = if read_only {
+        Task::read_only(description)
+    } else {
+        Task::new(description)
+    };
+    let executor = EchoTaskExecutor;
+
+    match mediator.dispatch(&task, &executor) {
+        Ok(result) => {
+            println!("{}: {}", outcome_label(result.outcome), result.summary);
+            Ok(())
+        }
+        Err(DispatchError::Denied) => {
+            Err("task was not confirmed by the user; nothing was executed".to_string())
+        }
+        Err(DispatchError::PermissionLoadFailed(message)) => {
+            Err(format!("failed to evaluate permission level: {message}"))
+        }
+    }
+}
+
+fn run_tasks(
+    store: &dyn PermissionStore,
+    audit_logger: &dyn AuditLogger,
+    descriptions: Vec<String>,
+    read_only: bool,
+    max_parallel: Option<usize>,
+) -> Result<(), String> {
+    let confirmation = CliConfirmationPrompt;
+    let mut mediator = Mediator::new(store, &confirmation, audit_logger);
+    if let Some(max_parallel_sub_agents) = max_parallel {
+        mediator = mediator.with_config(MediatorConfig {
+            max_parallel_sub_agents,
+        });
+    }
+    let tasks: Vec<Task> = descriptions
+        .into_iter()
+        .map(|description| {
+            if read_only {
+                Task::read_only(description)
+            } else {
+                Task::new(description)
+            }
+        })
+        .collect();
+    let executor = EchoTaskExecutor;
+
+    for (task, result) in tasks.iter().zip(mediator.dispatch_many(&tasks, &executor)) {
+        match result {
+            Ok(result) => println!(
+                "{}: {} ({})",
+                outcome_label(result.outcome),
+                result.summary,
+                task.description
+            ),
+            Err(e) => println!("denied: {e} ({})", task.description),
+        }
+    }
+    Ok(())
+}
+
+fn outcome_label(outcome: TaskOutcome) -> &'static str {
+    match outcome {
+        TaskOutcome::Success => "success",
+        TaskOutcome::Failure => "failure",
+    }
+}
+
 fn log_audit(
     audit_logger: &dyn AuditLogger,
     level: PermissionLevel,
@@ -257,13 +400,4 @@ fn log_audit(
     if let Err(e) = audit_logger.record(&entry) {
         eprintln!("warning: failed to record audit log entry: {e}");
     }
-}
-
-fn prompt_yes_no(prompt: &str) -> std::io::Result<bool> {
-    print!("{prompt}");
-    std::io::stdout().flush()?;
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    let answer = input.trim().to_lowercase();
-    Ok(answer == "y" || answer == "yes")
 }

@@ -56,6 +56,44 @@ impl std::fmt::Display for PermissionLevel {
     }
 }
 
+/// Whether an operation can proceed without asking the user first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionDecision {
+    AutoAllow,
+    RequireConfirmation,
+}
+
+impl PermissionLevel {
+    /// Combines the active level with an operation's danger classification
+    /// (4.1's common filter) and whether it's read-only into the
+    /// confirmation policy each level's doc comment promises. This is the
+    /// pre-check the Mediator runs before delegating a task to a Sub Agent
+    /// (4.7.1); Sub Agents never call this themselves.
+    ///
+    /// `MiddlePermission`'s directory/command whitelist judgment isn't
+    /// implemented yet, so it currently falls back to the same
+    /// dangerous-operation gate as `LowSecurity`.
+    pub fn decide(self, danger: &[DangerKind], read_only: bool) -> PermissionDecision {
+        match self {
+            PermissionLevel::GodMode => PermissionDecision::AutoAllow,
+            PermissionLevel::LowSecurity | PermissionLevel::MiddlePermission => {
+                if danger.is_empty() {
+                    PermissionDecision::AutoAllow
+                } else {
+                    PermissionDecision::RequireConfirmation
+                }
+            }
+            PermissionLevel::HighProtect => {
+                if read_only {
+                    PermissionDecision::AutoAllow
+                } else {
+                    PermissionDecision::RequireConfirmation
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PermissionError {
     #[error("could not determine the OS config directory")]
@@ -98,5 +136,56 @@ mod tests {
     #[test]
     fn parse_rejects_unknown_values() {
         assert_eq!(PermissionLevel::parse("nonsense"), None);
+    }
+
+    #[test]
+    fn god_mode_always_auto_allows() {
+        for danger in [vec![], vec![DangerKind::Delete]] {
+            for read_only in [true, false] {
+                assert_eq!(
+                    PermissionLevel::GodMode.decide(&danger, read_only),
+                    PermissionDecision::AutoAllow
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn low_security_and_middle_permission_gate_on_danger_only() {
+        for level in [
+            PermissionLevel::LowSecurity,
+            PermissionLevel::MiddlePermission,
+        ] {
+            assert_eq!(level.decide(&[], false), PermissionDecision::AutoAllow);
+            assert_eq!(level.decide(&[], true), PermissionDecision::AutoAllow);
+            assert_eq!(
+                level.decide(&[DangerKind::Delete], false),
+                PermissionDecision::RequireConfirmation
+            );
+            assert_eq!(
+                level.decide(&[DangerKind::Delete], true),
+                PermissionDecision::RequireConfirmation
+            );
+        }
+    }
+
+    #[test]
+    fn high_protect_only_auto_allows_read_only_operations() {
+        assert_eq!(
+            PermissionLevel::HighProtect.decide(&[], true),
+            PermissionDecision::AutoAllow
+        );
+        assert_eq!(
+            PermissionLevel::HighProtect.decide(&[DangerKind::Delete], true),
+            PermissionDecision::AutoAllow
+        );
+        assert_eq!(
+            PermissionLevel::HighProtect.decide(&[], false),
+            PermissionDecision::RequireConfirmation
+        );
+        assert_eq!(
+            PermissionLevel::HighProtect.decide(&[DangerKind::Delete], false),
+            PermissionDecision::RequireConfirmation
+        );
     }
 }
