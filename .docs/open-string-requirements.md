@@ -116,7 +116,7 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 - [x] 権限レベルごとの操作ログ記録（`AuditLogger`/`FileAuditLogger`、`src/permission/audit_log.rs`。`permission set`・god mode再確認の判定結果を記録）
 - [x] 危険操作（削除・送信・外部送信・課金）の検出ロジック（権限レベルに依らない共通フィルタ）（`classify`関数、`src/permission/danger.rs`）
 - [ ] **MCP設定ファイル等、Coreの動作に関わるコンフィグの自己編集も危険操作として権限管理の対象に含める**（5.4と連携。ユーザー確認を経た上での自動導入は許可するが、無断での設定変更は権限レベルに応じて拒否・確認要求する）
-- [ ] ワークスペース単位での権限レベル個別設定
+- [x] ワークスペース単位での権限レベル個別設定（`WorkspacePermissionStore`、`src/permission/workspace_store.rs`。`--workspace`指定時はワークスペース配下`.open-string/permission`を優先し、未設定時はグローバル設定にフォールバック）
 - [ ] **権限チェックはMediator Agentが一元的に事前判定する**（4.7参照）。Sub Agent生成前にタスク内容と権限レベルを照合し、許可された範囲のタスクのみSub Agentへ委譲する
 - [ ] Sub Agent側には権限チェックロジックを実装しない（責務の単純化・軽量化。二重判定は行わない）
 - [ ] Mediatorの事前判定をバイパスしてSub Agentが直接生成されることがないよう、Sub Agent生成経路をMediator経由に一本化する設計・実装

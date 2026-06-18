@@ -5,9 +5,10 @@ use auth::{AnthropicApiKeyProvider, AuthProvider, validate_api_key_format};
 use clap::{Parser, Subcommand};
 use permission::{
     AuditDecision, AuditEntry, AuditLogger, FileAuditLogger, FilePermissionStore, PermissionLevel,
-    PermissionStore,
+    PermissionStore, WorkspacePermissionStore,
 };
 use std::io::Write;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "open-string", version, about = "Open String Core CLI")]
@@ -47,13 +48,22 @@ enum AuthAction {
 #[derive(Subcommand)]
 enum PermissionAction {
     /// Show the active permission level
-    Status,
+    Status {
+        /// Show the level for this workspace directory instead of the
+        /// global default (falls back to global if no override is set)
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
     /// Set the active permission level
     Set {
         level: PermissionLevel,
         /// Required to enable god mode (explicit opt-in)
         #[arg(long)]
         confirm: bool,
+        /// Set the level for this workspace directory instead of the
+        /// global default
+        #[arg(long)]
+        workspace: Option<PathBuf>,
     },
 }
 
@@ -87,10 +97,14 @@ fn main() {
             AuthAction::Logout => logout(&provider),
         },
         Command::Permission { action } => match action {
-            PermissionAction::Status => permission_status(&permission_store),
-            PermissionAction::Set { level, confirm } => {
-                permission_set(&permission_store, &audit_logger, level, confirm)
-            }
+            PermissionAction::Status { workspace } => permission_store_for(workspace.as_deref())
+                .and_then(|store| permission_status(store.as_ref())),
+            PermissionAction::Set {
+                level,
+                confirm,
+                workspace,
+            } => permission_store_for(workspace.as_deref())
+                .and_then(|store| permission_set(store.as_ref(), &audit_logger, level, confirm)),
         },
     };
 
@@ -141,6 +155,23 @@ fn prompt_hidden(prompt: &str) -> std::io::Result<String> {
     print!("{prompt}");
     std::io::stdout().flush()?;
     rpassword::read_password()
+}
+
+/// Builds the permission store a `permission status`/`permission set`
+/// invocation should act on: a workspace-scoped override when `--workspace`
+/// is given (falling back to the global level when no override is set
+/// yet), otherwise the global store.
+fn permission_store_for(
+    workspace: Option<&std::path::Path>,
+) -> Result<Box<dyn PermissionStore>, String> {
+    match workspace {
+        Some(path) => WorkspacePermissionStore::new(path)
+            .map(|store| Box::new(store) as Box<dyn PermissionStore>)
+            .map_err(|e| format!("failed to open workspace permission store: {e}")),
+        None => FilePermissionStore::new()
+            .map(|store| Box::new(store) as Box<dyn PermissionStore>)
+            .map_err(|e| format!("failed to open permission store: {e}")),
+    }
 }
 
 fn permission_status(store: &dyn PermissionStore) -> Result<(), String> {

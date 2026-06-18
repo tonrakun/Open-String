@@ -1,10 +1,12 @@
 mod audit_log;
 mod danger;
 mod file_store;
+mod workspace_store;
 
 pub use audit_log::{AuditDecision, AuditEntry, AuditLogger, FileAuditLogger};
 pub use danger::{DangerKind, classify as classify_danger};
 pub use file_store::FilePermissionStore;
+pub use workspace_store::WorkspacePermissionStore;
 
 use std::io;
 
