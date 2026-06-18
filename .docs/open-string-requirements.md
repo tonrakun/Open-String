@@ -97,11 +97,17 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 
 ### 4.1 OAuth認証・実行権限管理
 
-- [ ] Claude Code向けOAuth認証フローの実装（初期対応はこれのみ）
-- [ ] OAuth抽象化層の設計（将来的に他プロバイダ追加可能な構造）
-- [ ] 認証情報の暗号化ローカル保存（平文保存の禁止。OpenClawの漏洩事例を踏まえた対策）
-- [ ] トークンリフレッシュ処理
-- [ ] 認証セッションの失効・再認証フロー
+> **方針変更（実装時の判断）**：当初想定の「Claude Code向けOAuth認証フロー」は、Anthropic公式が
+> 提供するOAuth APIではなく、Claude Code CLI内部のリバースエンジニアリングされたPKCEフロー・
+> 固定client_idを利用する方式であり、利用規約上のリスク（アカウント停止等）があるため採用しない。
+> 代わりに**通常のAnthropic公式APIキー認証**を採用する。将来OAuthを含む他プロバイダを追加する
+> 余地は認証プロバイダ抽象化層として残す。
+
+- [x] Anthropic APIキー認証の実装（`AuthProvider`実装として`AnthropicApiKeyProvider`、`src/auth/api_key.rs`）
+- [x] 認証プロバイダ抽象化層の設計（将来的に他プロバイダ・OAuth追加可能な構造。`AuthProvider`トレイト、`src/auth/mod.rs`）
+- [x] 認証情報の暗号化ローカル保存（平文保存の禁止。`keyring` crate経由でOS標準セキュアストレージ（Windows Credential Manager / macOS Keychain / Linux Secret Service）に保存。6.3 311行目とも連携）
+- [ ] トークンリフレッシュ処理（APIキー方式では対象外。将来OAuthプロバイダを追加する場合に再検討）
+- [x] 認証セッションの失効・再認証フロー（`auth logout`での失効、`auth login`での再認証として実装）
 - [ ] 権限レベル4段階の定義と切り替えUI
   - [ ] `god mode`：全操作許可、確認なし。デフォルト無効。明示的な有効化操作必須、かつ起動毎の再確認を要求
   - [ ] `low security`：基本許可。削除・送信・課金・公開等の不可逆操作のみ確認を要求
@@ -249,6 +255,11 @@ Mediatorは常駐かつユーザーと長時間対話し続けるため、Sub Ag
 - [ ] **適用範囲の明確化**：Ctx AgentはMediator専用の仕組みとする。Sub Agentは1タスク=1生成の使い捨てセッションであり、原理的にコンテキストが肥大化しない前提のため、Ctx Agent介入の対象外とする
 - [ ] Ctx Agent自体の処理に失敗した場合のフェイルセーフ（要約失敗時にMediatorを強制終了させず、閾値到達前の状態を維持して再試行する等）
 
+#### 4.8 初回インストール時
+- [ ] 初めてユーザーが本ソフトをインストールするときは環境に合わせたps1・shスクリプトを実行する
+- [ ] スクリプトはPATHの追加や必要なフォルダの作成等を自動で行う
+- [ ] これらのスクリプト郡はGitHub Actionsによって作られたReleaseに同袍して公開される
+
 ---
 
 ## 5. Extension機能要件
@@ -303,7 +314,7 @@ Mediatorは常駐かつユーザーと長時間対話し続けるため、Sub Ag
 - [ ] トークン消費削減率のベンチマーク方針策定（t0k3n-mcp適用時/非適用時の比較）
 
 ### 6.3 セキュリティ
-- [ ] 認証情報の暗号化保存（OS標準のセキュアストレージ利用を検討：Windows Credential Manager / macOS Keychain / Linux Secret Service）
+- [x] 認証情報の暗号化保存（OS標準のセキュアストレージ利用：Windows Credential Manager / macOS Keychain / Linux Secret Service。`keyring` crateで実装、4.1参照）
 - [ ] 設定ファイルの平文秘匿情報禁止（OpenClawの`~/.moltbot/`漏洩事例の対策として明文化）
 - [ ] 間接的プロンプトインジェクション対策（外部コンテンツ内の指示文言を実行指示として扱わないフィルタ層）
 - [ ] チャットゲートウェイの公開設定デフォルトを「許可リスト制」とする（OpenClawの誤公開インスタンス問題への対策）
