@@ -4,3 +4,8 @@
 CLAUDE.md
 /.t0k3n
 /.claude
+
+
+# Added by cargo
+
+/target
