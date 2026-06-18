@@ -5,6 +5,7 @@ mod mediator;
 mod result;
 mod sub_agent;
 mod task;
+mod tools;
 
 pub use claude_executor::ClaudeTaskExecutor;
 pub use confirmation::{CliConfirmationPrompt, ConfirmationPrompt};

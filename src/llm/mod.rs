@@ -1,3 +1,3 @@
 mod client;
 
-pub use client::{ClaudeClient, ClaudeError};
+pub use client::{ClaudeClient, ClaudeError, ContentBlock, Message, ToolDefinition};
