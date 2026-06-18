@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+dirs = "5"
 keyring = "4"
 rpassword = "7"
 thiserror = "2"

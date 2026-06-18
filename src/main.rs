@@ -1,7 +1,9 @@
 mod auth;
+mod permission;
 
 use auth::{AnthropicApiKeyProvider, AuthProvider, validate_api_key_format};
 use clap::{Parser, Subcommand};
+use permission::{FilePermissionStore, PermissionLevel, PermissionStore};
 use std::io::Write;
 
 #[derive(Parser)]
@@ -17,6 +19,11 @@ enum Command {
     Auth {
         #[command(subcommand)]
         action: AuthAction,
+    },
+    /// Manage the active operation permission level
+    Permission {
+        #[command(subcommand)]
+        action: PermissionAction,
     },
 }
 
@@ -34,15 +41,46 @@ enum AuthAction {
     Logout,
 }
 
+#[derive(Subcommand)]
+enum PermissionAction {
+    /// Show the active permission level
+    Status,
+    /// Set the active permission level
+    Set {
+        level: PermissionLevel,
+        /// Required to enable god mode (explicit opt-in)
+        #[arg(long)]
+        confirm: bool,
+    },
+}
+
 fn main() {
     let cli = Cli::parse();
     let provider = AnthropicApiKeyProvider::new();
+    let permission_store = match FilePermissionStore::new() {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(message) = reconfirm_god_mode_if_active(&permission_store) {
+        eprintln!("error: {message}");
+        std::process::exit(1);
+    }
 
     let result = match cli.command {
         Command::Auth { action } => match action {
             AuthAction::Login { api_key } => login(&provider, api_key),
             AuthAction::Status => status(&provider),
             AuthAction::Logout => logout(&provider),
+        },
+        Command::Permission { action } => match action {
+            PermissionAction::Status => permission_status(&permission_store),
+            PermissionAction::Set { level, confirm } => {
+                permission_set(&permission_store, level, confirm)
+            }
         },
     };
 
@@ -93,4 +131,61 @@ fn prompt_hidden(prompt: &str) -> std::io::Result<String> {
     print!("{prompt}");
     std::io::stdout().flush()?;
     rpassword::read_password()
+}
+
+fn permission_status(store: &dyn PermissionStore) -> Result<(), String> {
+    let level = store
+        .load()
+        .map_err(|e| format!("failed to read permission level: {e}"))?;
+    println!("Active permission level: {level}");
+    if level == PermissionLevel::GodMode {
+        println!("note: god mode requires reconfirmation on every launch.");
+    }
+    Ok(())
+}
+
+fn permission_set(
+    store: &dyn PermissionStore,
+    level: PermissionLevel,
+    confirm: bool,
+) -> Result<(), String> {
+    if level == PermissionLevel::GodMode && !confirm {
+        return Err("god mode must be enabled explicitly; re-run with `--confirm`".to_string());
+    }
+
+    store
+        .set(level)
+        .map_err(|e| format!("failed to set permission level: {e}"))?;
+    println!("Permission level set to {level}.");
+    Ok(())
+}
+
+/// God mode is disabled by default and, once enabled, must be reconfirmed
+/// on every launch rather than staying silently active from a past run.
+fn reconfirm_god_mode_if_active(store: &dyn PermissionStore) -> Result<(), String> {
+    let level = store
+        .load()
+        .map_err(|e| format!("failed to read permission level: {e}"))?;
+    if level != PermissionLevel::GodMode {
+        return Ok(());
+    }
+
+    eprintln!(
+        "warning: god mode is the active permission level (all operations allowed, no confirmation)."
+    );
+    let confirmed = prompt_yes_no("Re-confirm god mode for this session? [y/N]: ")
+        .map_err(|e| e.to_string())?;
+    if !confirmed {
+        eprintln!("god mode not reconfirmed; treating this session as high-protect.");
+    }
+    Ok(())
+}
+
+fn prompt_yes_no(prompt: &str) -> std::io::Result<bool> {
+    print!("{prompt}");
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let answer = input.trim().to_lowercase();
+    Ok(answer == "y" || answer == "yes")
 }
