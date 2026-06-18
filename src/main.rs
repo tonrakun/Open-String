@@ -1,14 +1,16 @@
 mod agent;
 mod auth;
+mod llm;
 mod permission;
 mod prompt;
 
 use agent::{
-    CliConfirmationPrompt, DispatchError, EchoTaskExecutor, Mediator, MediatorConfig, Task,
+    ClaudeTaskExecutor, CliConfirmationPrompt, DispatchError, Mediator, MediatorConfig, Task,
     TaskOutcome,
 };
 use auth::{AnthropicApiKeyProvider, AuthProvider, validate_api_key_format};
 use clap::{Parser, Subcommand};
+use llm::ClaudeClient;
 use permission::{
     AuditDecision, AuditEntry, AuditLogger, FileAuditLogger, FilePermissionStore, PermissionLevel,
     PermissionStore, WorkspacePermissionStore,
@@ -81,9 +83,8 @@ enum PermissionAction {
 #[derive(Subcommand)]
 enum AgentAction {
     /// Run a single task through the Mediator's permission pre-check and a
-    /// disposable Sub Agent. Until a real LLM-backed executor lands, this
-    /// echoes the task description back as the result, so it's a way to
-    /// exercise the permission/confirmation/audit-log pipeline end to end.
+    /// disposable Sub Agent backed by the Claude API. Requires an API key
+    /// configured via `auth login`.
     RunTask {
         description: String,
         /// Mark the task as read-only (auto-allowed under high-protect)
@@ -156,8 +157,15 @@ fn main() {
                 description,
                 read_only,
                 workspace,
-            } => permission_store_for(workspace.as_deref())
-                .and_then(|store| run_task(store.as_ref(), &audit_logger, description, read_only)),
+            } => permission_store_for(workspace.as_deref()).and_then(|store| {
+                run_task(
+                    store.as_ref(),
+                    &audit_logger,
+                    &provider,
+                    description,
+                    read_only,
+                )
+            }),
             AgentAction::RunTasks {
                 descriptions,
                 read_only,
@@ -167,6 +175,7 @@ fn main() {
                 run_tasks(
                     store.as_ref(),
                     &audit_logger,
+                    &provider,
                     descriptions,
                     read_only,
                     max_parallel,
@@ -310,12 +319,23 @@ fn reconfirm_god_mode_if_active(
     Ok(())
 }
 
+/// Builds a Claude API client from the API key stored via `auth login`.
+fn claude_client_from_stored_key(provider: &dyn AuthProvider) -> Result<ClaudeClient, String> {
+    match provider.load() {
+        Ok(Some(api_key)) => Ok(ClaudeClient::new(api_key)),
+        Ok(None) => Err("no Anthropic API key configured; run `auth login` first".to_string()),
+        Err(e) => Err(format!("failed to read stored API key: {e}")),
+    }
+}
+
 fn run_task(
     store: &dyn PermissionStore,
     audit_logger: &dyn AuditLogger,
+    provider: &dyn AuthProvider,
     description: String,
     read_only: bool,
 ) -> Result<(), String> {
+    let client = claude_client_from_stored_key(provider)?;
     let confirmation = CliConfirmationPrompt;
     let mediator = Mediator::new(store, &confirmation, audit_logger);
     let task = if read_only {
@@ -323,7 +343,7 @@ fn run_task(
     } else {
         Task::new(description)
     };
-    let executor = EchoTaskExecutor;
+    let executor = ClaudeTaskExecutor::new(&client);
 
     match mediator.dispatch(&task, &executor) {
         Ok(result) => {
@@ -342,10 +362,12 @@ fn run_task(
 fn run_tasks(
     store: &dyn PermissionStore,
     audit_logger: &dyn AuditLogger,
+    provider: &dyn AuthProvider,
     descriptions: Vec<String>,
     read_only: bool,
     max_parallel: Option<usize>,
 ) -> Result<(), String> {
+    let client = claude_client_from_stored_key(provider)?;
     let confirmation = CliConfirmationPrompt;
     let mut mediator = Mediator::new(store, &confirmation, audit_logger);
     if let Some(max_parallel_sub_agents) = max_parallel {
@@ -363,7 +385,7 @@ fn run_tasks(
             }
         })
         .collect();
-    let executor = EchoTaskExecutor;
+    let executor = ClaudeTaskExecutor::new(&client);
 
     for (task, result) in tasks.iter().zip(mediator.dispatch_many(&tasks, &executor)) {
         match result {

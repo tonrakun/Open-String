@@ -220,7 +220,7 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 
 #### 4.7.2 Sub Agent（実行者・1タスク=1生成・使い捨て）
 - [x] 1タスクにつき1体のSub Agentを都度生成する（タスク完了後は破棄、状態を持ち越さない）（`SubAgent::run`は`self`を消費するため一度しか実行できない、`src/agent/sub_agent.rs`）
-- [ ] システムプロンプトにより、自然言語によるナレーション・実況・説明文の出力を明示的に禁止する（例：「Webを検索します」「ファイルを読み込んでいます」等の文言を一切出力しない）
+- [x] システムプロンプトにより、自然言語によるナレーション・実況・説明文の出力を明示的に禁止する（例：「Webを検索します」「ファイルを読み込んでいます」等の文言を一切出力しない）（`ClaudeTaskExecutor`の`SUB_AGENT_SYSTEM_PROMPT`で明示的に禁止、`src/agent/claude_executor.rs`）
 - [x] Sub Agentの出力は、作業結果・成果物パス・状態変化・エラー情報等に限定する（`TaskResult { outcome, summary }`のみを返却、ナレーション用の出力経路は存在しない）
 - [ ] 作業系ツール（Web検索・ファイル操作・コマンド実行・外部MCP呼び出し等）の実行に専従する
 - [ ] t0k3n-mcp等のExtensionを「作業効率化用途」で呼び出す（`read_code_skeleton/body`、`batch_read`等）
