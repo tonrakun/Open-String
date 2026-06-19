@@ -6,7 +6,7 @@ mod prompt;
 
 use agent::{
     ClaudeTaskExecutor, CliConfirmationPrompt, DispatchError, Mediator, MediatorConfig, Task,
-    TaskOutcome,
+    TaskOutcome, natural_language_response,
 };
 use auth::{AnthropicApiKeyProvider, AuthProvider, validate_api_key_format};
 use clap::{Parser, Subcommand};
@@ -393,6 +393,25 @@ fn run_tasks(
     // picking one result.
     let report = mediator.dispatch_many_aggregated(&tasks, &executor);
 
+    // The Mediator is the sole natural-language interlocutor (4.7.1): it
+    // phrases the aggregated report itself rather than handing the user
+    // raw structured data. If phrasing fails (e.g. API error), fall back to
+    // printing the structured report so the result isn't lost.
+    match natural_language_response(&client, &report) {
+        Ok(response) => println!("{response}"),
+        Err(_) => print_structured_report(&report),
+    }
+    Ok(())
+}
+
+fn outcome_label(outcome: TaskOutcome) -> &'static str {
+    match outcome {
+        TaskOutcome::Success => "success",
+        TaskOutcome::Failure => "failure",
+    }
+}
+
+fn print_structured_report(report: &agent::AggregatedReport) {
     for item in &report.items {
         let agreement = if item.duplicate_count > 1 {
             format!(" [{} sub agents agreed]", item.duplicate_count)
@@ -418,14 +437,6 @@ fn run_tasks(
     }
     for denied in &report.denied {
         println!("denied: {} ({})", denied.reason, denied.description);
-    }
-    Ok(())
-}
-
-fn outcome_label(outcome: TaskOutcome) -> &'static str {
-    match outcome {
-        TaskOutcome::Success => "success",
-        TaskOutcome::Failure => "failure",
     }
 }
 

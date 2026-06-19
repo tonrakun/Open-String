@@ -115,7 +115,7 @@ Open String（オープン・ストリング）。「糸」「つながり」「
   - [x] `high protect`：原則すべての操作に確認を要求。読み取り専用操作のみ自動許可（デフォルト値として採用）
 - [x] 権限レベルごとの操作ログ記録（`AuditLogger`/`FileAuditLogger`、`src/permission/audit_log.rs`。`permission set`・god mode再確認の判定結果を記録）
 - [x] 危険操作（削除・送信・外部送信・課金）の検出ロジック（権限レベルに依らない共通フィルタ）（`classify`関数、`src/permission/danger.rs`）
-- [ ] **MCP設定ファイル等、Coreの動作に関わるコンフィグの自己編集も危険操作として権限管理の対象に含める**（5.4と連携。ユーザー確認を経た上での自動導入は許可するが、無断での設定変更は権限レベルに応じて拒否・確認要求する）
+- [x] **MCP設定ファイル等、Coreの動作に関わるコンフィグの自己編集も危険操作として権限管理の対象に含める**（5.4と連携。ユーザー確認を経た上での自動導入は許可するが、無断での設定変更は権限レベルに応じて拒否・確認要求する）（`DangerKind::ConfigEdit`/`CONFIG_EDIT_KEYWORDS`、`src/permission/danger.rs`）
 - [x] ワークスペース単位での権限レベル個別設定（`WorkspacePermissionStore`、`src/permission/workspace_store.rs`。`--workspace`指定時はワークスペース配下`.open-string/permission`を優先し、未設定時はグローバル設定にフォールバック）
 - [x] **権限チェックはMediator Agentが一元的に事前判定する**（4.7参照）。Sub Agent生成前にタスク内容と権限レベルを照合し、許可された範囲のタスクのみSub Agentへ委譲する（`Mediator::dispatch`/`dispatch_many`、`src/agent/mediator.rs`）
 - [x] Sub Agent側には権限チェックロジックを実装しない（責務の単純化・軽量化。二重判定は行わない）（`SubAgent`は`permission`モジュールに一切依存しない、`src/agent/sub_agent.rs`）
@@ -215,7 +215,7 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 - [ ] Mediatorはt0k3n-mcp等のExtensionを「状態管理用途」で自ら呼び出す（`memory_save/get`、`session_snapshot/restore`等）
 - [x] ユーザーからの依頼を受け、タスクを分解し、Sub Agentに渡すための専用システムプロンプト（スコープ・権限情報・利用可能ツール一覧）を生成する（`TaskScope::for_task`、`src/agent/scope.rs`。`Mediator::authorize`が確定した`PermissionLevel`とタスクの`read_only`から許可ツール一覧を算出し、`ClaudeTaskExecutor`はそれを`scope.describe()`としてシステムプロンプトに展開・ツール一覧をフィルタするのみで、ポリシー自体は決定しない。タスク分解＝ユーザー依頼の自然言語解釈は4.7.1の対話メインループ未実装のため、現状は呼び出し側がCLI引数として個々のタスクを直接渡す形）
 - [x] 権限レベルに基づく事前判定を行い、許可されたタスクのみSub Agentへ委譲する（4.1と連携。Sub Agent側には権限ロジックを持たせない）（`Mediator::authorize`が`PermissionLevel::decide`で判定し、許可されない限りSubAgentは生成されない）
-- [ ] 複数Sub Agentを並列実行した場合、各Sub Agentからの結果を集約し、ユーザー向けの自然言語応答に変換する
+- [x] 複数Sub Agentを並列実行した場合、各Sub Agentからの結果を集約し、ユーザー向けの自然言語応答に変換する（`agent::natural_language_response`、`src/agent/respond.rs`。`AggregatedReport`をMediatorがClaudeClientへ直接渡し、自然言語の応答文に変換。API失敗時は構造化レポートの表示にフォールバック、`main.rs`の`print_structured_report`）
 - [ ] ユーザーとの対話履歴・進行中タスクの状態・ワークスペースごとのコンテキストを保持する（4.2.3と連携）
 
 #### 4.7.2 Sub Agent（実行者・1タスク=1生成・使い捨て）
