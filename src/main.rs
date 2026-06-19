@@ -3,10 +3,11 @@ mod auth;
 mod llm;
 mod permission;
 mod prompt;
+mod session;
 
 use agent::{
     ClaudeTaskExecutor, CliConfirmationPrompt, CtxAgentConfig, DispatchError, FileMemoryStore,
-    FileProgressMemoStore, Mediator, MediatorConfig, MediatorTurn, ProgressMemoStore,
+    FileProgressMemoStore, Mediator, MediatorConfig, MediatorTurn, MemoryStore, ProgressMemoStore,
     SystemPromptBuilder, Task, TaskOutcome, clear_stale_tool_results, compact, is_phase_boundary,
     natural_language_response, render_report, should_compact,
 };
@@ -16,6 +17,9 @@ use llm::{ClaudeClient, Message};
 use permission::{
     AuditDecision, AuditEntry, AuditLogger, FileAuditLogger, FilePermissionStore, PermissionLevel,
     PermissionStore, WorkspacePermissionStore,
+};
+use session::{
+    FileSessionRegistry, FileWorkspaceRegistry, SessionRegistry, Workspace, WorkspaceRegistry,
 };
 use std::io::Write;
 use std::path::PathBuf;
@@ -44,6 +48,16 @@ enum Command {
         #[command(subcommand)]
         action: AgentAction,
     },
+    /// Create, list, remove, and switch between workspaces (4.5)
+    Workspace {
+        #[command(subcommand)]
+        action: WorkspaceAction,
+    },
+    /// List and end chat sessions recorded for a workspace (4.5)
+    Session {
+        #[command(subcommand)]
+        action: SessionAction,
+    },
     /// Start an interactive natural-language session with the Mediator
     /// (4.7.1): free-form requests are interpreted turn by turn, decomposed
     /// into Sub Agent tasks when execution is needed, and dispatched.
@@ -63,6 +77,10 @@ enum Command {
         /// context window the summarized history should shrink to (4.7.5)
         #[arg(long)]
         ctx_target_size_pct: Option<u8>,
+        /// Resume a previous session's conversation history instead of
+        /// starting fresh, restoring the latest snapshot saved for it (4.5)
+        #[arg(long)]
+        resume: Option<u64>,
     },
 }
 
@@ -103,6 +121,41 @@ enum PermissionAction {
         confirm: bool,
         /// Set the level for this workspace directory instead of the
         /// global default
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkspaceAction {
+    /// Register a directory as a workspace (creates it if missing)
+    Create {
+        path: PathBuf,
+        /// Human-readable name; defaults to the directory's file name
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// List every registered workspace, marking the current one
+    List,
+    /// Unregister a workspace (does not delete its `.open-string/` state)
+    Remove { path: PathBuf },
+    /// Make a workspace the current one, used as the default `--workspace`
+    /// for commands that omit the flag
+    Switch { path: PathBuf },
+    /// Show the current workspace, if any
+    Status,
+}
+
+#[derive(Subcommand)]
+enum SessionAction {
+    /// List sessions recorded for a workspace (or the global scope)
+    List {
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Mark a session as ended
+    End {
+        id: u64,
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
@@ -183,68 +236,105 @@ fn main() {
             AuthAction::Logout => logout(&provider),
         },
         Command::Permission { action } => match action {
-            PermissionAction::Status { workspace } => permission_store_for(workspace.as_deref())
-                .and_then(|store| permission_status(store.as_ref())),
+            PermissionAction::Status { workspace } => {
+                let workspace = resolve_workspace(workspace);
+                permission_store_for(workspace.as_deref())
+                    .and_then(|store| permission_status(store.as_ref()))
+            }
             PermissionAction::Set {
                 level,
                 confirm,
                 workspace,
-            } => permission_store_for(workspace.as_deref())
-                .and_then(|store| permission_set(store.as_ref(), &audit_logger, level, confirm)),
+            } => {
+                let workspace = resolve_workspace(workspace);
+                permission_store_for(workspace.as_deref())
+                    .and_then(|store| permission_set(store.as_ref(), &audit_logger, level, confirm))
+            }
         },
         Command::Agent { action } => match action {
             AgentAction::RunTask {
                 description,
                 read_only,
                 workspace,
-            } => permission_store_for(workspace.as_deref()).and_then(|store| {
-                run_task(
-                    store.as_ref(),
-                    &audit_logger,
-                    &provider,
-                    description,
-                    read_only,
-                    workspace.as_deref(),
-                )
-            }),
+            } => {
+                let workspace = resolve_workspace(workspace);
+                permission_store_for(workspace.as_deref()).and_then(|store| {
+                    run_task(
+                        store.as_ref(),
+                        &audit_logger,
+                        &provider,
+                        description,
+                        read_only,
+                        workspace.as_deref(),
+                    )
+                })
+            }
             AgentAction::RunTasks {
                 descriptions,
                 read_only,
                 workspace,
                 max_parallel,
-            } => permission_store_for(workspace.as_deref()).and_then(|store| {
-                run_tasks(
-                    store.as_ref(),
-                    &audit_logger,
-                    &provider,
-                    descriptions,
-                    read_only,
-                    max_parallel,
-                    workspace.as_deref(),
-                )
-            }),
+            } => {
+                let workspace = resolve_workspace(workspace);
+                permission_store_for(workspace.as_deref()).and_then(|store| {
+                    run_tasks(
+                        store.as_ref(),
+                        &audit_logger,
+                        &provider,
+                        descriptions,
+                        read_only,
+                        max_parallel,
+                        workspace.as_deref(),
+                    )
+                })
+            }
             AgentAction::PromptVersions {
                 read_only,
                 workspace,
-            } => permission_store_for(workspace.as_deref())
-                .and_then(|store| prompt_versions(store.as_ref(), read_only)),
+            } => {
+                let workspace = resolve_workspace(workspace);
+                permission_store_for(workspace.as_deref())
+                    .and_then(|store| prompt_versions(store.as_ref(), read_only))
+            }
+        },
+        Command::Workspace { action } => match action {
+            WorkspaceAction::Create { path, name } => workspace_create(&path, name),
+            WorkspaceAction::List => workspace_list(),
+            WorkspaceAction::Remove { path } => workspace_remove(&path),
+            WorkspaceAction::Switch { path } => workspace_switch(&path),
+            WorkspaceAction::Status => workspace_status(),
+        },
+        Command::Session { action } => match action {
+            SessionAction::List { workspace } => {
+                session_list(resolve_workspace(workspace).as_deref())
+            }
+            SessionAction::End { id, workspace } => {
+                session_end(resolve_workspace(workspace).as_deref(), id)
+            }
         },
         Command::Chat {
             workspace,
             max_parallel,
             ctx_trigger_threshold_pct,
             ctx_target_size_pct,
-        } => permission_store_for(workspace.as_deref()).and_then(|store| {
-            chat(
-                store.as_ref(),
-                &audit_logger,
-                &provider,
-                max_parallel,
-                ctx_trigger_threshold_pct,
-                ctx_target_size_pct,
-                workspace.as_deref(),
-            )
-        }),
+            resume,
+        } => {
+            let workspace = resolve_workspace(workspace);
+            permission_store_for(workspace.as_deref()).and_then(|store| {
+                chat(
+                    store.as_ref(),
+                    &audit_logger,
+                    &provider,
+                    workspace.as_deref(),
+                    ChatOptions {
+                        max_parallel,
+                        ctx_trigger_threshold_pct,
+                        ctx_target_size_pct,
+                        resume,
+                    },
+                )
+            })
+        }
     };
 
     if let Err(message) = result {
@@ -311,6 +401,103 @@ fn permission_store_for(
             .map(|store| Box::new(store) as Box<dyn PermissionStore>)
             .map_err(|e| format!("failed to open permission store: {e}")),
     }
+}
+
+/// Falls back to the registry's current workspace when `--workspace` was
+/// omitted, so `workspace switch` actually changes default behavior for
+/// every command that accepts the flag (4.5).
+fn resolve_workspace(explicit: Option<PathBuf>) -> Option<PathBuf> {
+    if explicit.is_some() {
+        return explicit;
+    }
+    FileWorkspaceRegistry::new()
+        .and_then(|registry| registry.current())
+        .ok()
+        .flatten()
+        .map(|workspace| workspace.path)
+}
+
+fn print_workspace(workspace: &Workspace, is_current: bool) {
+    let marker = if is_current { "* " } else { "  " };
+    println!("{marker}{} ({})", workspace.name, workspace.path.display());
+}
+
+fn workspace_create(path: &std::path::Path, name: Option<String>) -> Result<(), String> {
+    let registry = FileWorkspaceRegistry::new()?;
+    let workspace = registry.create(path, name)?;
+    println!(
+        "Workspace \"{}\" registered at {}.",
+        workspace.name,
+        workspace.path.display()
+    );
+    Ok(())
+}
+
+fn workspace_list() -> Result<(), String> {
+    let registry = FileWorkspaceRegistry::new()?;
+    let workspaces = registry.list()?;
+    let current = registry.current()?;
+    if workspaces.is_empty() {
+        println!("No workspaces registered. Run `workspace create <path>` to add one.");
+        return Ok(());
+    }
+    for workspace in &workspaces {
+        let is_current = current.as_ref().map(|c| &c.path) == Some(&workspace.path);
+        print_workspace(workspace, is_current);
+    }
+    Ok(())
+}
+
+fn workspace_remove(path: &std::path::Path) -> Result<(), String> {
+    let registry = FileWorkspaceRegistry::new()?;
+    registry.remove(path)?;
+    println!("Workspace at {} unregistered.", path.display());
+    Ok(())
+}
+
+fn workspace_switch(path: &std::path::Path) -> Result<(), String> {
+    let registry = FileWorkspaceRegistry::new()?;
+    let workspace = registry.switch(path)?;
+    println!(
+        "Switched to workspace \"{}\" ({}).",
+        workspace.name,
+        workspace.path.display()
+    );
+    Ok(())
+}
+
+fn workspace_status() -> Result<(), String> {
+    let registry = FileWorkspaceRegistry::new()?;
+    match registry.current()? {
+        Some(workspace) => print_workspace(&workspace, true),
+        None => println!("No current workspace. Run `workspace switch <path>` to set one."),
+    }
+    Ok(())
+}
+
+fn session_list(workspace: Option<&std::path::Path>) -> Result<(), String> {
+    let registry = FileSessionRegistry::for_workspace(workspace)?;
+    let sessions = registry.list()?;
+    if sessions.is_empty() {
+        println!("No sessions recorded.");
+        return Ok(());
+    }
+    for s in &sessions {
+        let state = if s.is_active() { "active" } else { "ended" };
+        let label = s.label.as_deref().unwrap_or("(no label)");
+        println!(
+            "[{}] #{} {label} started_at={} ({state})",
+            state, s.id, s.started_at
+        );
+    }
+    Ok(())
+}
+
+fn session_end(workspace: Option<&std::path::Path>, id: u64) -> Result<(), String> {
+    let registry = FileSessionRegistry::for_workspace(workspace)?;
+    registry.end(id)?;
+    println!("Session #{id} ended.");
+    Ok(())
 }
 
 fn permission_status(store: &dyn PermissionStore) -> Result<(), String> {
@@ -497,19 +684,26 @@ fn run_tasks(
 /// のターンが完了した時点で") the Ctx Agent's trigger check runs against the
 /// accumulated history; once it crosses the threshold, `compact` summarizes
 /// and hands the Mediator a replacement history before the next prompt.
+/// Bundles `chat`'s tunable knobs so the function itself stays under
+/// clippy's argument-count limit as more 4.5/4.7.5 options are added.
+struct ChatOptions {
+    max_parallel: Option<usize>,
+    ctx_trigger_threshold_pct: Option<u8>,
+    ctx_target_size_pct: Option<u8>,
+    resume: Option<u64>,
+}
+
 fn chat(
     store: &dyn PermissionStore,
     audit_logger: &dyn AuditLogger,
     provider: &dyn AuthProvider,
-    max_parallel: Option<usize>,
-    ctx_trigger_threshold_pct: Option<u8>,
-    ctx_target_size_pct: Option<u8>,
     workspace: Option<&std::path::Path>,
+    options: ChatOptions,
 ) -> Result<(), String> {
     let client = claude_client_from_stored_key(provider)?;
     let confirmation = CliConfirmationPrompt;
     let mut mediator = Mediator::new(store, &confirmation, audit_logger);
-    if let Some(max_parallel_sub_agents) = max_parallel {
+    if let Some(max_parallel_sub_agents) = options.max_parallel {
         mediator = mediator.with_config(MediatorConfig {
             max_parallel_sub_agents,
         });
@@ -518,14 +712,48 @@ fn chat(
         .with_extensions(agent::load_connected_extensions(workspace));
     let mut history: Vec<Message> = Vec::new();
     let mut ctx_config = CtxAgentConfig::default();
-    if let Some(pct) = ctx_trigger_threshold_pct {
+    if let Some(pct) = options.ctx_trigger_threshold_pct {
         ctx_config.trigger_threshold_pct = pct;
     }
-    if let Some(pct) = ctx_target_size_pct {
+    if let Some(pct) = options.ctx_target_size_pct {
         ctx_config.target_size_pct = pct;
     }
-    let memory = FileMemoryStore::new()?;
-    let progress = FileProgressMemoStore::new()?;
+    let resume = options.resume;
+    // Workspace-scoped state (4.2.3): conversation memory and progress
+    // notes live under the workspace's own `.open-string/` directory when
+    // one is given, so two workspaces never see each other's history.
+    let memory = FileMemoryStore::at(session::memory_dir_for(workspace)?);
+    let progress = FileProgressMemoStore::at(session::progress_path_for(workspace)?);
+    let sessions = FileSessionRegistry::for_workspace(workspace)?;
+    let current_session = sessions.start(None)?;
+
+    // The snapshot label spans every run of a given session: resuming
+    // session #N keeps appending to that session's own snapshot lineage
+    // rather than starting a fresh one under this run's new session id
+    // (4.5's snapshot/restore requirement).
+    let snapshot_label = format!("session-{}", resume.unwrap_or(current_session.id));
+
+    // 4.5: restore a prior session's conversation in full when asked,
+    // instead of starting from an empty transcript.
+    if let Some(resume_id) = resume {
+        match memory.load_latest(&format!("session-{resume_id}")) {
+            Ok(Some(restored)) => {
+                println!(
+                    "Resumed session #{resume_id} ({} messages restored).",
+                    restored.len()
+                );
+                history = restored;
+            }
+            Ok(None) => {
+                eprintln!(
+                    "warning: no saved snapshot found for session #{resume_id}; starting fresh."
+                );
+            }
+            Err(e) => {
+                eprintln!("warning: failed to restore session #{resume_id}: {e}; starting fresh.");
+            }
+        }
+    }
 
     // 4.2.2's external-memo escape hatch: completed/unresolved work from a
     // prior session was written to the progress memo even after that
@@ -638,6 +866,16 @@ fn chat(
                 }
             }
         }
+
+        // Snapshot after every turn (4.5's snapshot/restore機構) so a crash
+        // or unclean exit loses at most one turn's worth of history rather
+        // than the whole session.
+        if let Err(e) = memory.save_history(&snapshot_label, &history) {
+            eprintln!("warning: failed to snapshot session history: {e}");
+        }
+    }
+    if let Err(e) = sessions.end(current_session.id) {
+        eprintln!("warning: failed to record session end: {e}");
     }
     Ok(())
 }

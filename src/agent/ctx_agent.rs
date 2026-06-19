@@ -104,19 +104,46 @@ pub struct FileMemoryStore {
 }
 
 impl FileMemoryStore {
-    pub fn new() -> Result<Self, String> {
-        let dir = dirs::config_dir()
-            .ok_or_else(|| "could not determine OS config directory".to_string())?
-            .join("open-string")
-            .join("memory");
-        Ok(Self::at(dir))
-    }
-
-    /// Builds a store rooted at an explicit directory, bypassing the OS
-    /// config-dir lookup. Used by tests so they don't write into the real
-    /// user config directory.
+    /// Builds a store rooted at an explicit directory. Callers resolve the
+    /// directory via `session::memory_dir_for` (global or workspace-scoped,
+    /// 4.2.3) rather than this type looking up the OS config dir itself.
     pub fn at(dir: PathBuf) -> Self {
         Self { dir }
+    }
+
+    /// Reads back the most recently saved history for `label`, if any --
+    /// the restore half of 4.5's "snapshot/restore機構". `save_history`
+    /// writes one timestamped `{label}-{timestamp}.json` file per call, so
+    /// this picks the lexicographically greatest (i.e. newest) one.
+    pub fn load_latest(&self, label: &str) -> Result<Option<Vec<Message>>, String> {
+        let prefix = format!("{label}-");
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.to_string()),
+        };
+
+        let mut newest: Option<(String, PathBuf)> = None;
+        for entry in entries {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            if !file_name.starts_with(&prefix) || !file_name.ends_with(".json") {
+                continue;
+            }
+            if newest.as_ref().is_none_or(|(name, _)| file_name > *name) {
+                newest = Some((file_name, entry.path()));
+            }
+        }
+
+        match newest {
+            Some((_, path)) => {
+                let contents = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+                serde_json::from_str(&contents)
+                    .map(Some)
+                    .map_err(|e| e.to_string())
+            }
+            None => Ok(None),
+        }
     }
 }
 
@@ -479,6 +506,40 @@ mod tests {
         let index = std::fs::read_to_string(dir.join("index.jsonl")).unwrap();
         assert!(index.contains("mediator-pre-compaction"));
         assert!(index.contains("user asked X; it succeeded."));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_latest_returns_the_newest_snapshot_for_a_label() {
+        let dir = std::env::temp_dir().join("open_string_ctx_agent_load_latest_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = FileMemoryStore::at(dir.clone());
+
+        store
+            .save_history("session-1", &[text_message("user", "first")])
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        store
+            .save_history("session-1", &[text_message("user", "second")])
+            .unwrap();
+
+        let restored = store.load_latest("session-1").unwrap().unwrap();
+        match &restored[0].content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "second"),
+            other => panic!("expected the newest snapshot, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_latest_returns_none_when_no_snapshot_exists() {
+        let dir = std::env::temp_dir().join("open_string_ctx_agent_load_latest_missing_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = FileMemoryStore::at(dir.clone());
+
+        assert!(store.load_latest("session-unknown").unwrap().is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

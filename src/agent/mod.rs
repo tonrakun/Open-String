@@ -19,8 +19,8 @@ pub use claude_executor::ClaudeTaskExecutor;
 pub use confirmation::{CliConfirmationPrompt, ConfirmationPrompt};
 pub use conversation::{MediatorTurn, plan};
 pub use ctx_agent::{
-    CtxAgentConfig, FileMemoryStore, clear_stale_tool_results, compact, is_phase_boundary,
-    should_compact,
+    CtxAgentConfig, FileMemoryStore, MemoryStore, clear_stale_tool_results, compact,
+    is_phase_boundary, should_compact,
 };
 pub use executor::TaskExecutor;
 pub use mediator::{DispatchError, Mediator, MediatorConfig};

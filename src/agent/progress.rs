@@ -25,17 +25,9 @@ pub struct FileProgressMemoStore {
 }
 
 impl FileProgressMemoStore {
-    pub fn new() -> Result<Self, String> {
-        let path = dirs::config_dir()
-            .ok_or_else(|| "could not determine OS config directory".to_string())?
-            .join("open-string")
-            .join("progress.md");
-        Ok(Self::at(path))
-    }
-
-    /// Builds a store rooted at an explicit file, bypassing the OS
-    /// config-dir lookup. Used by tests so they don't write into the real
-    /// user config directory.
+    /// Builds a store rooted at an explicit file. Callers resolve the path
+    /// via `session::progress_path_for` (global or workspace-scoped,
+    /// 4.2.3) rather than this type looking up the OS config dir itself.
     pub fn at(path: PathBuf) -> Self {
         Self { path }
     }

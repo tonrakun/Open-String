@@ -105,7 +105,7 @@ pub struct ToolDefinition {
 /// One turn of a conversation. Built up across a tool-use loop: the
 /// assistant's `tool_use` blocks and the caller's `tool_result` blocks both
 /// round-trip through here so the model can see its own prior tool calls.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: String,
     pub content: Vec<ContentBlock>,

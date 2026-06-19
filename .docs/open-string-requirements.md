@@ -145,9 +145,9 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 - [x] 外部状態への退避（進捗ファイル/構造化メモ）：要約のロスを補うため、完了タスク・変更ファイル一覧・未解決事項等を構造化された外部メモ（例：`progress.md`相当）に書き出し、コンテキストリセット後に読み込み直す仕組み（`ProgressMemoStore`/`FileProgressMemoStore`、`src/agent/progress.rs`。完了タスクと拒否/競合（未解決事項）をMarkdownチェックリストとして`progress.md`へ追記し、`chat`起動時に読み込んで history へ復元する。変更ファイル一覧は専用の構造化フィールドが無く、各完了項目の`summary`本文に含まれる範囲でのベストエフォート）
 
 #### 4.2.3 マルチセッション/マルチワークスペース状態管理
-- [ ] 複数ワークスペースを横断した状態管理レイヤー
-- [ ] ワークスペース単位のコンテキスト分離（メモリ・履歴・権限の独立性）
-- [ ] セッション一覧・現在状態のダッシュボード表示用データ提供
+- [x] 複数ワークスペースを横断した状態管理レイヤー（`FileWorkspaceRegistry`/`FileSessionRegistry`、`src/session/`。グローバル設定ディレクトリのJSONファイルで全ワークスペースを横断管理し、current pointerで「現在のワークスペース」を保持）
+- [x] ワークスペース単位のコンテキスト分離（メモリ・履歴・権限の独立性）（`session::memory_dir_for`/`progress_path_for`が`<workspace>/.open-string/{memory,progress.md}`を返し、`FileSessionRegistry::for_workspace`が`<workspace>/.open-string/sessions.json`を返す。既存の`WorkspacePermissionStore`と同じ`.open-string/`配置で権限・履歴・セッションがワークスペースごとに独立）
+- [x] セッション一覧・現在状態のダッシュボード表示用データ提供（`open-string session list`が各セッションのid/label/開始時刻/active状態を構造化して出力。`SessionRegistry::list`がそのままTUI/GUIダッシュボード（4.3）からも呼び出せる）
 
 #### 4.2.4 t0k3n-mcpとの責務分担（明確化）
 - [ ] Core側はt0k3n-mcpがカバーする「ファイル/コード読み込みのトークン削減」には介入しない（重複実装を避ける）
@@ -191,10 +191,10 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 
 ### 4.5 セッション・ワークスペース管理
 
-- [ ] ワークスペースの作成・削除・切り替え
-- [ ] セッションの作成・一覧・終了
-- [ ] ワークスペースごとの設定（権限レベル、有効Extension、認証プロバイダ）の個別管理
-- [ ] セッション状態の永続化（snapshot/restore機構、4.2.2と連携）
+- [x] ワークスペースの作成・削除・切り替え（`open-string workspace create/list/remove/switch/status`、`FileWorkspaceRegistry`、`src/session/workspace.rs`。`switch`で設定したcurrentワークスペースは`--workspace`省略時のデフォルトとして`chat`/`agent`/`permission`系コマンドに反映される）
+- [x] セッションの作成・一覧・終了（`open-string session list/end`、`FileSessionRegistry`、`src/session/registry.rs`。`chat`が起動時にセッションを開始し終了時に終了する）
+- [ ] ワークスペースごとの設定（権限レベル、有効Extension、認証プロバイダ）の個別管理（権限レベルは`WorkspacePermissionStore`で個別管理済みだが、有効Extension・認証プロバイダのワークスペース別設定は未実装。5.1/5.3のExtension基盤実装時に対応予定）
+- [x] セッション状態の永続化（snapshot/restore機構、4.2.2と連携）（`chat`が各ターン後に`FileMemoryStore::save_history`でセッション単位のスナップショットを保存し、`--resume <session-id>`で`FileMemoryStore::load_latest`から最新スナップショットを復元して会話を再開できる）
 
 ### 4.6 セルフヘルスチェック・自己修復（新規要件）
 
