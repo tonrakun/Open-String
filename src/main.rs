@@ -1,9 +1,11 @@
 mod agent;
 mod auth;
 mod llm;
+mod mcp;
 mod permission;
 mod prompt;
 mod session;
+mod skills;
 
 use agent::{
     ClaudeTaskExecutor, CliConfirmationPrompt, CtxAgentConfig, DispatchError, FileMemoryStore,
@@ -57,6 +59,11 @@ enum Command {
     Session {
         #[command(subcommand)]
         action: SessionAction,
+    },
+    /// Manage MCP server Extensions (`.mcp.json`) and SKILLS (5.1)
+    Extension {
+        #[command(subcommand)]
+        action: ExtensionAction,
     },
     /// Start an interactive natural-language session with the Mediator
     /// (4.7.1): free-form requests are interpreted turn by turn, decomposed
@@ -156,6 +163,61 @@ enum SessionAction {
     /// Mark a session as ended
     End {
         id: u64,
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExtensionAction {
+    /// List configured MCP servers and loaded SKILLS for a workspace
+    List {
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Add (or replace) an MCP server entry in `.mcp.json`
+    Add {
+        name: String,
+        command: String,
+        /// Minimum permission level required before Core will connect
+        #[arg(long)]
+        required_permission_level: Option<PermissionLevel>,
+        /// Name of this server's history-snapshot tool, if it should be
+        /// used for the Mediator's state management (4.7.1)
+        #[arg(long)]
+        memory_save_tool: Option<String>,
+        /// Name of this server's searchable-index tool, if it should be
+        /// used for the Mediator's state management (4.7.1)
+        #[arg(long)]
+        memory_index_tool: Option<String>,
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+        /// Arguments passed to `command`, e.g. `-- -y t0k3n-mcp`
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+    /// Remove an MCP server entry
+    Remove {
+        name: String,
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Re-enable a disabled MCP server entry
+    Enable {
+        name: String,
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Disable an MCP server entry without removing its configuration
+    Disable {
+        name: String,
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Connect to a configured server and list the tools it advertises,
+    /// verifying both connectivity and permission-level compatibility
+    Check {
+        name: String,
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
@@ -310,6 +372,42 @@ fn main() {
             }
             SessionAction::End { id, workspace } => {
                 session_end(resolve_workspace(workspace).as_deref(), id)
+            }
+        },
+        Command::Extension { action } => match action {
+            ExtensionAction::List { workspace } => {
+                extension_list(resolve_workspace(workspace).as_deref())
+            }
+            ExtensionAction::Add {
+                name,
+                command,
+                required_permission_level,
+                memory_save_tool,
+                memory_index_tool,
+                workspace,
+                args,
+            } => extension_add(
+                resolve_workspace(workspace).as_deref(),
+                name,
+                command,
+                args,
+                required_permission_level,
+                memory_save_tool,
+                memory_index_tool,
+            ),
+            ExtensionAction::Remove { name, workspace } => {
+                extension_remove(resolve_workspace(workspace).as_deref(), &name)
+            }
+            ExtensionAction::Enable { name, workspace } => {
+                extension_set_enabled(resolve_workspace(workspace).as_deref(), &name, true)
+            }
+            ExtensionAction::Disable { name, workspace } => {
+                extension_set_enabled(resolve_workspace(workspace).as_deref(), &name, false)
+            }
+            ExtensionAction::Check { name, workspace } => {
+                let workspace = resolve_workspace(workspace);
+                permission_store_for(workspace.as_deref())
+                    .and_then(|store| extension_check(store.as_ref(), workspace.as_deref(), &name))
             }
         },
         Command::Chat {
@@ -500,6 +598,147 @@ fn session_end(workspace: Option<&std::path::Path>, id: u64) -> Result<(), Strin
     Ok(())
 }
 
+fn extension_list(workspace: Option<&std::path::Path>) -> Result<(), String> {
+    let config = mcp::load(workspace)?;
+    if config.mcp_servers.is_empty() {
+        println!("No MCP servers configured. Run `extension add <name> <command>` to add one.");
+    } else {
+        for (name, entry) in &config.mcp_servers {
+            let state = if entry.disabled {
+                "disabled"
+            } else {
+                "enabled"
+            };
+            let requirement = entry
+                .required_permission_level
+                .map(|level| format!(", requires {level}"))
+                .unwrap_or_default();
+            println!(
+                "{name} [{state}]: {} {}{requirement}",
+                entry.command,
+                entry.args.join(" ")
+            );
+        }
+    }
+
+    let loaded_skills = skills::load_skills(workspace);
+    if loaded_skills.is_empty() {
+        println!("No SKILLS loaded.");
+    } else {
+        for skill in &loaded_skills {
+            println!("skill {}: {}", skill.name, skill.description);
+        }
+    }
+    Ok(())
+}
+
+fn extension_add(
+    workspace: Option<&std::path::Path>,
+    name: String,
+    command: String,
+    args: Vec<String>,
+    required_permission_level: Option<PermissionLevel>,
+    memory_save_tool: Option<String>,
+    memory_index_tool: Option<String>,
+) -> Result<(), String> {
+    let mut config = mcp::load(workspace)?;
+    config.mcp_servers.insert(
+        name.clone(),
+        mcp::McpServerConfig {
+            command,
+            args,
+            required_permission_level,
+            memory_save_tool,
+            memory_index_tool,
+            ..Default::default()
+        },
+    );
+    mcp::save(workspace, &config)?;
+    println!(
+        "Extension \"{name}\" added to {}.",
+        mcp::config_path(workspace).display()
+    );
+    Ok(())
+}
+
+fn extension_remove(workspace: Option<&std::path::Path>, name: &str) -> Result<(), String> {
+    let mut config = mcp::load(workspace)?;
+    if config.mcp_servers.remove(name).is_none() {
+        return Err(format!("no extension named \"{name}\" is configured"));
+    }
+    mcp::save(workspace, &config)?;
+    println!("Extension \"{name}\" removed.");
+    Ok(())
+}
+
+fn extension_set_enabled(
+    workspace: Option<&std::path::Path>,
+    name: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut config = mcp::load(workspace)?;
+    let entry = config
+        .mcp_servers
+        .get_mut(name)
+        .ok_or_else(|| format!("no extension named \"{name}\" is configured"))?;
+    entry.disabled = !enabled;
+    mcp::save(workspace, &config)?;
+    println!(
+        "Extension \"{name}\" {}.",
+        if enabled { "enabled" } else { "disabled" }
+    );
+    Ok(())
+}
+
+/// Connects to a configured server and lists its tools, checking 5.1's two
+/// gates first: the entry must be enabled, and Core's active permission
+/// level must satisfy the entry's `requiredPermissionLevel` (5.4 will reuse
+/// this same check before a Mediator-driven dynamic introduction connects).
+fn extension_check(
+    store: &dyn PermissionStore,
+    workspace: Option<&std::path::Path>,
+    name: &str,
+) -> Result<(), String> {
+    let config = mcp::load(workspace)?;
+    let entry = config
+        .mcp_servers
+        .get(name)
+        .ok_or_else(|| format!("no extension named \"{name}\" is configured"))?;
+
+    if entry.disabled {
+        return Err(format!(
+            "extension \"{name}\" is disabled; run `extension enable {name}` first"
+        ));
+    }
+
+    let level = store
+        .load()
+        .map_err(|e| format!("failed to read permission level: {e}"))?;
+    if !entry.is_compatible_with(level) {
+        let required = entry
+            .required_permission_level
+            .expect("is_compatible_with only fails when a requirement is set");
+        return Err(format!(
+            "extension \"{name}\" requires permission level {required} or higher; current level is {level}"
+        ));
+    }
+
+    let mut client = mcp::McpClient::connect(&entry.command, &entry.args)
+        .map_err(|e| format!("failed to connect to \"{name}\": {e}"))?;
+    let tools = client
+        .list_tools()
+        .map_err(|e| format!("connected to \"{name}\" but failed to list its tools: {e}"))?;
+
+    println!(
+        "\"{name}\" is reachable and advertises {} tool(s):",
+        tools.len()
+    );
+    for tool in &tools {
+        println!("  {}: {}", tool.name, tool.description);
+    }
+    Ok(())
+}
+
 fn permission_status(store: &dyn PermissionStore) -> Result<(), String> {
     let level = store
         .load()
@@ -609,8 +848,12 @@ fn run_task(
     } else {
         Task::new(description)
     };
+    let level = store
+        .load()
+        .map_err(|e| format!("failed to read permission level: {e}"))?;
     let executor = ClaudeTaskExecutor::new(&client)
-        .with_extensions(agent::load_connected_extensions(workspace));
+        .with_extensions(agent::load_connected_extensions(workspace))
+        .with_mcp_tools(agent::connect_workspace_tools(workspace, level));
 
     match mediator.dispatch(&task, &executor) {
         Ok(result) => {
@@ -653,8 +896,12 @@ fn run_tasks(
             }
         })
         .collect();
+    let level = store
+        .load()
+        .map_err(|e| format!("failed to read permission level: {e}"))?;
     let executor = ClaudeTaskExecutor::new(&client)
-        .with_extensions(agent::load_connected_extensions(workspace));
+        .with_extensions(agent::load_connected_extensions(workspace))
+        .with_mcp_tools(agent::connect_workspace_tools(workspace, level));
 
     // The Mediator aggregates results across the batch (4.7.4): agreeing
     // Sub Agents collapse into one line, disagreeing ones surface as a
@@ -708,8 +955,12 @@ fn chat(
             max_parallel_sub_agents,
         });
     }
+    let permission_level = store
+        .load()
+        .map_err(|e| format!("failed to read permission level: {e}"))?;
     let executor = ClaudeTaskExecutor::new(&client)
-        .with_extensions(agent::load_connected_extensions(workspace));
+        .with_extensions(agent::load_connected_extensions(workspace))
+        .with_mcp_tools(agent::connect_workspace_tools(workspace, permission_level));
     let mut history: Vec<Message> = Vec::new();
     let mut ctx_config = CtxAgentConfig::default();
     if let Some(pct) = options.ctx_trigger_threshold_pct {
@@ -722,7 +973,21 @@ fn chat(
     // Workspace-scoped state (4.2.3): conversation memory and progress
     // notes live under the workspace's own `.open-string/` directory when
     // one is given, so two workspaces never see each other's history.
-    let memory = FileMemoryStore::at(session::memory_dir_for(workspace)?);
+    //
+    // 4.7.1: prefer an Extension configured for state management (e.g.
+    // t0k3n-mcp's memory tools) over the local `FileMemoryStore`, falling
+    // back to it when no such Extension is connected or reachable.
+    let memory_dir = session::memory_dir_for(workspace)?;
+    // 4.5's snapshot/restore for `--resume` always goes through the local
+    // store directly (predictable, no network/process dependency); the
+    // Ctx Agent's pre-compaction backup (4.2.2) additionally prefers a
+    // connected state-management Extension when one is configured.
+    let local_memory = FileMemoryStore::at(memory_dir.clone());
+    let memory: Box<dyn MemoryStore + Sync> =
+        match agent::connect_for_state_management(workspace, permission_level) {
+            Some(extension_memory) => extension_memory,
+            None => Box::new(FileMemoryStore::at(memory_dir)),
+        };
     let progress = FileProgressMemoStore::at(session::progress_path_for(workspace)?);
     let sessions = FileSessionRegistry::for_workspace(workspace)?;
     let current_session = sessions.start(None)?;
@@ -736,7 +1001,7 @@ fn chat(
     // 4.5: restore a prior session's conversation in full when asked,
     // instead of starting from an empty transcript.
     if let Some(resume_id) = resume {
-        match memory.load_latest(&format!("session-{resume_id}")) {
+        match local_memory.load_latest(&format!("session-{resume_id}")) {
             Ok(Some(restored)) => {
                 println!(
                     "Resumed session #{resume_id} ({} messages restored).",
@@ -849,7 +1114,7 @@ fn chat(
             match compact(
                 &client,
                 &history,
-                &memory,
+                memory.as_ref(),
                 MEDIATOR_CONTEXT_WINDOW_TOKENS,
                 &ctx_config,
             ) {
@@ -870,7 +1135,7 @@ fn chat(
         // Snapshot after every turn (4.5's snapshot/restore機構) so a crash
         // or unclean exit loses at most one turn's worth of history rather
         // than the whole session.
-        if let Err(e) = memory.save_history(&snapshot_label, &history) {
+        if let Err(e) = local_memory.save_history(&snapshot_label, &history) {
             eprintln!("warning: failed to snapshot session history: {e}");
         }
     }

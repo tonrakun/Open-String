@@ -56,6 +56,25 @@ impl std::fmt::Display for PermissionLevel {
     }
 }
 
+/// Serialized as the same kebab-case string `as_str()`/`parse()` use
+/// everywhere else (CLI flags, audit log lines), rather than a derived
+/// PascalCase variant name, so an Extension config's
+/// `requiredPermissionLevel` reads the same as `permission status`'s
+/// output (5.1's permission-scope compatibility check).
+impl serde::Serialize for PermissionLevel {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PermissionLevel {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        PermissionLevel::parse(&s)
+            .ok_or_else(|| serde::de::Error::custom(format!("invalid permission level: {s}")))
+    }
+}
+
 /// Whether an operation can proceed without asking the user first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionDecision {

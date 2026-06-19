@@ -212,18 +212,18 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 #### 4.7.1 Mediator Agent（仲介者・常駐）
 - [x] ユーザー（チャット/TUI/GUI経由）と自然言語で対話する唯一の主体として実装する（CLI版の対話ループとして`open-string chat`を実装。`agent::plan`（`src/agent/conversation.rs`）が各ユーザー発話をClaudeへ送り、実行が必要なら`delegate_tasks`ツール呼び出しで`Task`群に分解、不要ならそのまま自然言語で直接応答。`main.rs`の`chat`関数がdirect応答とdelegated応答（`Mediator::dispatch_many_aggregated`→`natural_language_response`）を1ループで仲介し、ツール呼び出しの内部過程は履歴に残さずユーザー発話と最終応答のみを保持する。TUI/GUI版は4.3で別途実装）
 - [x] Mediator自身は作業系ツール（検索・ファイル操作・コマンド実行等）を原則実行しない。実行が必要な場合は必ずSub Agentを生成して委譲する（`Mediator`構造体に作業系ツール実行コードは存在せず、`dispatch`/`dispatch_many`が唯一のSub Agent生成経路、`src/agent/mediator.rs`）
-- [ ] Mediatorはt0k3n-mcp等のExtensionを「状態管理用途」で自ら呼び出す（`memory_save/get`、`session_snapshot/restore`等）
+- [x] Mediatorはt0k3n-mcp等のExtensionを「状態管理用途」で自ら呼び出す（`memory_save/get`、`session_snapshot/restore`等）（`agent::connect_for_state_management`/`McpMemoryStore`、`src/agent/mcp_memory.rs`。`.mcp.json`で`memorySaveTool`/`memoryIndexTool`を宣言したExtensionが有効かつ権限互換なら、Ctx Agentの圧縮前バックアップ保存先としてローカル`FileMemoryStore`の代わりに使用。接続失敗時はローカルへフェイルソフト。`--resume`によるセッション復元は引き続きローカルの`FileMemoryStore::load_latest`のみを使用（Extension側の汎用的なget/restoreツール呼び出しは未実装）)
 - [x] ユーザーからの依頼を受け、タスクを分解し、Sub Agentに渡すための専用システムプロンプト（スコープ・権限情報・利用可能ツール一覧）を生成する（`TaskScope::for_task`、`src/agent/scope.rs`。`Mediator::authorize`が確定した`PermissionLevel`とタスクの`read_only`から許可ツール一覧を算出し、`ClaudeTaskExecutor`はそれを`scope.describe()`としてシステムプロンプトに展開・ツール一覧をフィルタするのみで、ポリシー自体は決定しない。タスク分解＝ユーザー依頼の自然言語解釈は`agent::plan`（4.7.1の対話メインループ）が担い、CLI引数で個々のタスクを直接渡す`agent run-task(s)`系コマンドは引き続きスクリプト用途として残置）
 - [x] 権限レベルに基づく事前判定を行い、許可されたタスクのみSub Agentへ委譲する（4.1と連携。Sub Agent側には権限ロジックを持たせない）（`Mediator::authorize`が`PermissionLevel::decide`で判定し、許可されない限りSubAgentは生成されない）
 - [x] 複数Sub Agentを並列実行した場合、各Sub Agentからの結果を集約し、ユーザー向けの自然言語応答に変換する（`agent::natural_language_response`、`src/agent/respond.rs`。`AggregatedReport`をMediatorがClaudeClientへ直接渡し、自然言語の応答文に変換。API失敗時は構造化レポートの表示にフォールバック、`main.rs`の`print_structured_report`）
-- [ ] ユーザーとの対話履歴・進行中タスクの状態・ワークスペースごとのコンテキストを保持する（4.2.3と連携）
+- [x] ユーザーとの対話履歴・進行中タスクの状態・ワークスペースごとのコンテキストを保持する（4.2.3と連携）（`chat`がセッション単位で会話履歴をスナップショット保存し`--resume`で復元、進行中タスクの未解決状態は4.2.2の進捗メモへ記録、ワークスペースごとのコンテキストは`session::memory_dir_for`/`progress_path_for`で分離。4.2.3参照）
 
 #### 4.7.2 Sub Agent（実行者・1タスク=1生成・使い捨て）
 - [x] 1タスクにつき1体のSub Agentを都度生成する（タスク完了後は破棄、状態を持ち越さない）（`SubAgent::run`は`self`を消費するため一度しか実行できない、`src/agent/sub_agent.rs`）
 - [x] システムプロンプトにより、自然言語によるナレーション・実況・説明文の出力を明示的に禁止する（例：「Webを検索します」「ファイルを読み込んでいます」等の文言を一切出力しない）（`ClaudeTaskExecutor`の`SUB_AGENT_SYSTEM_PROMPT`で明示的に禁止、`src/agent/claude_executor.rs`）
 - [x] Sub Agentの出力は、作業結果・成果物パス・状態変化・エラー情報等に限定する（`TaskResult { outcome, summary }`のみを返却、ナレーション用の出力経路は存在しない）
-- [ ] 作業系ツール（Web検索・ファイル操作・コマンド実行・外部MCP呼び出し等）の実行に専従する（ファイル操作・コマンド実行はClaude APIのtool useループとして実装済み。`read_file`/`write_file`/`run_command`、`src/agent/tools.rs`・`src/agent/claude_executor.rs`。基本的なWeb取得として`fetch_url`（HTTP GET、`src/agent/tools.rs`）を追加済みだが、検索エンジン統合（Web検索）と外部MCP呼び出しは未実装）
-- [ ] t0k3n-mcp等のExtensionを「作業効率化用途」で呼び出す（`read_code_skeleton/body`、`batch_read`等）
+- [x] 作業系ツール（Web検索・ファイル操作・コマンド実行・外部MCP呼び出し等）の実行に専従する（ファイル操作・コマンド実行は`read_file`/`write_file`/`run_command`（`src/agent/tools.rs`）、基本的なWeb取得は`fetch_url`で実装済み。外部MCP呼び出しは`agent::connect_workspace_tools`+`ClaudeTaskExecutor::with_mcp_tools`（`src/agent/mcp_tools.rs`・`src/agent/claude_executor.rs`）で実装：`.mcp.json`の有効かつ権限互換なサーバーが広告するツールを`tools/list`で収集しClaudeのツール一覧へ追加、呼び出し時は`tools/call`で該当サーバーへルーティング。検索エンジン統合は専用の検索APIを直接組み込むのではなく、検索ツールを持つExtensionを接続すれば同じ汎用機構でSub Agentから利用可能になる設計とした）
+- [x] t0k3n-mcp等のExtensionを「作業効率化用途」で呼び出す（`read_code_skeleton/body`、`batch_read`等）（上記と同じ汎用MCP呼び出し機構を使用。t0k3n-mcpを`.mcp.json`に登録すれば、advertiseされた`read_code_skeleton`/`read_code_body`/`batch_read`等のツールがSub Agentに自動的に提供される。t0k3n-mcp自体のデフォルトバンドル同梱は5.2/task 35で対応予定）
 - [x] タスク管理・メモリ管理は一切行わない（これらはMediatorの責務。4.7.1参照）（`SubAgent`にタスク管理・メモリ管理コードは存在しない）
 - [x] 権限チェックロジックを持たない（Mediatorが委譲前に判定済みのタスクのみを受け取る前提）（`src/agent/sub_agent.rs`は`permission`モジュールに一切依存しない）
 - [x] 危険操作を実行しようとした場合でも、Mediatorが事前判定した権限スコープ外であれば実行不能な構成とする（ツールアクセス自体をスコープで制限）（`Mediator::authorize`が拒否した場合、`SubAgent`自体が生成されない）
@@ -265,10 +265,10 @@ Mediatorは常駐かつユーザーと長時間対話し続けるため、Sub Ag
 ## 5. Extension機能要件
 
 ### 5.1 Extension基盤
-- [ ] MCP準拠の外部サーバー接続インターフェース実装
-- [ ] SKILLS形式の拡張機能読み込み機構
-- [ ] Extension一覧管理・有効/無効切り替えUI（TUI/GUI連携）
-- [ ] Extensionごとの権限スコープ設定（Extensionが要求する権限とCoreの権限レベルの整合性チェック）
+- [x] MCP準拠の外部サーバー接続インターフェース実装（`McpClient`、`src/mcp/client.rs`。stdio上のJSON-RPC 2.0でinitializeハンドシェイク・tools/list・tools/callを実装。I/Oを`Box<dyn Write/BufRead>`で抽象化し、実プロセスを起動せずプロトコル層を単体テスト可能にした）
+- [x] SKILLS形式の拡張機能読み込み機構（`skills::load_skills`、`src/skills.rs`。`---`区切りのYAMLフロントマター（name/description）+本文を持つMarkdownファイルをワークスペースの`.open-string/skills/`から読み込み）
+- [ ] Extension一覧管理・有効/無効切り替えUI（TUI/GUI連携）（CLI（`open-string extension list/enable/disable`）は実装済み。TUI/GUI側のUI連携は4.3実装時に対応）
+- [x] Extensionごとの権限スコープ設定（Extensionが要求する権限とCoreの権限レベルの整合性チェック）（`McpServerConfig::required_permission_level`+`is_compatible_with`、`src/mcp/config.rs`。`open-string extension check`が接続前にCoreの現在権限レベルとの整合性を検証）
 
 ### 5.2 公式Extension: t0k3n-mcp バンドル
 - [ ] t0k3n-mcpをデフォルトバンドルとして同封

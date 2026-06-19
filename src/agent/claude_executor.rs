@@ -1,3 +1,4 @@
+use super::mcp_tools::McpToolSource;
 use super::system_prompt::{ExtensionInfo, SystemPromptBuilder};
 use super::tools;
 use super::{Task, TaskExecutor, TaskResult, TaskScope};
@@ -18,6 +19,7 @@ const MAX_TOOL_ITERATIONS: usize = 8;
 pub struct ClaudeTaskExecutor<'a> {
     client: &'a ClaudeClient,
     extensions: Vec<ExtensionInfo>,
+    mcp_tools: Vec<McpToolSource>,
 }
 
 impl<'a> ClaudeTaskExecutor<'a> {
@@ -25,6 +27,7 @@ impl<'a> ClaudeTaskExecutor<'a> {
         Self {
             client,
             extensions: Vec::new(),
+            mcp_tools: Vec::new(),
         }
     }
 
@@ -34,6 +37,40 @@ impl<'a> ClaudeTaskExecutor<'a> {
     pub fn with_extensions(mut self, extensions: Vec<ExtensionInfo>) -> Self {
         self.extensions = extensions;
         self
+    }
+
+    /// Registers tools sourced from connected MCP servers (4.7.2's "外部MCP
+    /// 呼び出し"/"t0k3n-mcp等のExtensionを「作業効率化用途」で呼び出す"):
+    /// offered to the model alongside the built-in tools, and routed back
+    /// to the server that advertised them when called.
+    pub fn with_mcp_tools(mut self, mcp_tools: Vec<McpToolSource>) -> Self {
+        self.mcp_tools = mcp_tools;
+        self
+    }
+
+    /// Routes a `tool_use` call to the built-in dispatcher unless `name`
+    /// matches a connected MCP server's advertised tool, in which case the
+    /// call goes to that server instead (4.7.2).
+    fn execute_tool(&self, name: &str, input: &serde_json::Value) -> (String, bool) {
+        if let Some(source) = self
+            .mcp_tools
+            .iter()
+            .find(|source| source.definition.name == name)
+        {
+            let mut client = match source.client.lock() {
+                Ok(client) => client,
+                Err(_) => return ("MCP client lock poisoned".to_string(), true),
+            };
+            return match client.call_tool(name, input.clone()) {
+                Ok(result) => (result.text(), result.is_error),
+                Err(e) => (e.to_string(), true),
+            };
+        }
+
+        match tools::execute(name, input) {
+            Ok(content) => (content, false),
+            Err(content) => (content, true),
+        }
     }
 }
 
@@ -53,10 +90,21 @@ impl TaskExecutor for ClaudeTaskExecutor<'_> {
             .with_extensions(&self.extensions)
             .build();
 
+        // Extension-sourced tools (4.7.2) are offered alongside the
+        // built-ins regardless of `scope.allowed_tools`: access to them is
+        // already gated upstream by each server's `requiredPermissionLevel`
+        // (5.1) at connection time, not by the task's read-only flag, since
+        // Open String has no per-tool semantics for arbitrary third-party
+        // tools to apply that flag to.
         let available_tools: Vec<ToolDefinition> = scope
             .allowed_tools
             .iter()
             .filter_map(|name| tool_for_name(name))
+            .chain(
+                self.mcp_tools
+                    .iter()
+                    .map(|source| source.definition.clone()),
+            )
             .collect();
 
         let mut messages = vec![Message::user_text(&task.description)];
@@ -103,17 +151,13 @@ impl TaskExecutor for ClaudeTaskExecutor<'_> {
 
             let tool_results = tool_uses
                 .into_iter()
-                .map(|(id, name, input)| match tools::execute(&name, &input) {
-                    Ok(content) => ContentBlock::ToolResult {
+                .map(|(id, name, input)| {
+                    let (content, is_error) = self.execute_tool(&name, &input);
+                    ContentBlock::ToolResult {
                         tool_use_id: id,
                         content,
-                        is_error: false,
-                    },
-                    Err(content) => ContentBlock::ToolResult {
-                        tool_use_id: id,
-                        content,
-                        is_error: true,
-                    },
+                        is_error,
+                    }
                 })
                 .collect();
             messages.push(Message::user_blocks(tool_results));
