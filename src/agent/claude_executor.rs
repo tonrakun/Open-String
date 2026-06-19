@@ -1,5 +1,5 @@
 use super::tools;
-use super::{Task, TaskExecutor, TaskResult};
+use super::{Task, TaskExecutor, TaskResult, TaskScope};
 use crate::llm::{ClaudeClient, ClaudeError, ContentBlock, Message, ToolDefinition};
 
 /// Enforces 4.7.2's narration ban: a Sub Agent must report only the work
@@ -34,30 +34,26 @@ impl<'a> ClaudeTaskExecutor<'a> {
 }
 
 impl TaskExecutor for ClaudeTaskExecutor<'_> {
-    fn execute(&self, task: &Task) -> TaskResult {
+    fn execute(&self, task: &Task, scope: &TaskScope) -> TaskResult {
         if task.description.trim().is_empty() {
             return TaskResult::failure("task description is empty");
         }
 
-        let system = if task.read_only {
-            format!("{SUB_AGENT_SYSTEM_PROMPT}{READ_ONLY_SUFFIX}")
-        } else {
-            SUB_AGENT_SYSTEM_PROMPT.to_string()
-        };
+        // The Mediator computes `scope` (permission level + allowed tool
+        // names) before a Sub Agent is ever generated (4.7.1); this
+        // executor only renders that scope into the model-facing system
+        // prompt and tool list, it does not decide tool access itself
+        // (4.7.2's "tool access itself is scope-limited").
+        let mut system = format!("{SUB_AGENT_SYSTEM_PROMPT}\n\n{}", scope.describe());
+        if scope.is_read_only() {
+            system.push_str(READ_ONLY_SUFFIX);
+        }
 
-        // A read-only task is restricted to the read_file tool at the
-        // source: write_file/run_command are simply never offered, so the
-        // model has no path to an irreversible action regardless of what it
-        // is asked to do (4.7.2's "tool access itself is scope-limited").
-        let available_tools: Vec<ToolDefinition> = if task.read_only {
-            vec![tools::read_file_tool()]
-        } else {
-            vec![
-                tools::read_file_tool(),
-                tools::write_file_tool(),
-                tools::run_command_tool(),
-            ]
-        };
+        let available_tools: Vec<ToolDefinition> = scope
+            .allowed_tools
+            .iter()
+            .filter_map(|name| tool_for_name(name))
+            .collect();
 
         let mut messages = vec![Message::user_text(&task.description)];
 
@@ -125,10 +121,21 @@ impl TaskExecutor for ClaudeTaskExecutor<'_> {
     }
 }
 
+fn tool_for_name(name: &str) -> Option<ToolDefinition> {
+    match name {
+        "read_file" => Some(tools::read_file_tool()),
+        "write_file" => Some(tools::write_file_tool()),
+        "run_command" => Some(tools::run_command_tool()),
+        "fetch_url" => Some(tools::fetch_url_tool()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::TaskOutcome;
+    use crate::permission::PermissionLevel;
     use httpmock::Method::POST;
     use httpmock::MockServer;
 
@@ -142,8 +149,10 @@ mod tests {
 
         let client = ClaudeClient::new("sk-ant-test").with_base_url(server.base_url());
         let executor = ClaudeTaskExecutor::new(&client);
+        let task = Task::new("  ");
+        let scope = TaskScope::for_task(&task, PermissionLevel::GodMode);
 
-        let result = executor.execute(&Task::new("  "));
+        let result = executor.execute(&task, &scope);
 
         assert_eq!(result.outcome, TaskOutcome::Failure);
         mock.assert_hits(0);
@@ -151,11 +160,18 @@ mod tests {
 
     #[test]
     fn read_only_task_sends_the_read_only_system_suffix() {
+        let task = Task::read_only("inspect config");
+        let scope = TaskScope::for_task(&task, PermissionLevel::HighProtect);
+        let expected_system = format!(
+            "{SUB_AGENT_SYSTEM_PROMPT}\n\n{}{READ_ONLY_SUFFIX}",
+            scope.describe()
+        );
+
         let server = MockServer::start();
         let mock = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/messages")
-                .json_body_partial(serde_json::json!({"system": format!("{SUB_AGENT_SYSTEM_PROMPT}{READ_ONLY_SUFFIX}")}).to_string());
+                .json_body_partial(serde_json::json!({"system": expected_system}).to_string());
             then.status(200).json_body(serde_json::json!({
                 "content": [{"type": "text", "text": "done"}]
             }));
@@ -164,7 +180,7 @@ mod tests {
         let client = ClaudeClient::new("sk-ant-test").with_base_url(server.base_url());
         let executor = ClaudeTaskExecutor::new(&client);
 
-        let result = executor.execute(&Task::read_only("inspect config"));
+        let result = executor.execute(&task, &scope);
 
         mock.assert();
         assert_eq!(result.outcome, TaskOutcome::Success);
@@ -183,8 +199,10 @@ mod tests {
 
         let client = ClaudeClient::new("sk-ant-test").with_base_url(server.base_url());
         let executor = ClaudeTaskExecutor::new(&client);
+        let task = Task::new("do something");
+        let scope = TaskScope::for_task(&task, PermissionLevel::GodMode);
 
-        let result = executor.execute(&Task::new("do something"));
+        let result = executor.execute(&task, &scope);
 
         assert_eq!(result.outcome, TaskOutcome::Failure);
         assert!(result.summary.contains("internal error"));
@@ -225,8 +243,10 @@ mod tests {
 
         let client = ClaudeClient::new("sk-ant-test").with_base_url(server.base_url());
         let executor = ClaudeTaskExecutor::new(&client);
+        let task = Task::new("read the file");
+        let scope = TaskScope::for_task(&task, PermissionLevel::GodMode);
 
-        let result = executor.execute(&Task::new("read the file"));
+        let result = executor.execute(&task, &scope);
 
         tool_use_mock.assert();
         final_mock.assert();
@@ -253,8 +273,10 @@ mod tests {
 
         let client = ClaudeClient::new("sk-ant-test").with_base_url(server.base_url());
         let executor = ClaudeTaskExecutor::new(&client);
+        let task = Task::read_only("inspect config");
+        let scope = TaskScope::for_task(&task, PermissionLevel::HighProtect);
 
-        let result = executor.execute(&Task::read_only("inspect config"));
+        let result = executor.execute(&task, &scope);
 
         mock.assert();
         assert_eq!(result.outcome, TaskOutcome::Success);
@@ -273,8 +295,10 @@ mod tests {
 
         let client = ClaudeClient::new("sk-ant-test").with_base_url(server.base_url());
         let executor = ClaudeTaskExecutor::new(&client);
+        let task = Task::new("loop forever");
+        let scope = TaskScope::for_task(&task, PermissionLevel::GodMode);
 
-        let result = executor.execute(&Task::new("loop forever"));
+        let result = executor.execute(&task, &scope);
 
         assert_eq!(result.outcome, TaskOutcome::Failure);
         assert!(result.summary.contains("iteration limit"));

@@ -387,16 +387,37 @@ fn run_tasks(
         .collect();
     let executor = ClaudeTaskExecutor::new(&client);
 
-    for (task, result) in tasks.iter().zip(mediator.dispatch_many(&tasks, &executor)) {
-        match result {
-            Ok(result) => println!(
-                "{}: {} ({})",
-                outcome_label(result.outcome),
-                result.summary,
-                task.description
-            ),
-            Err(e) => println!("denied: {e} ({})", task.description),
+    // The Mediator aggregates results across the batch (4.7.4): agreeing
+    // Sub Agents collapse into one line, disagreeing ones surface as a
+    // conflict with its majority-vote resolution instead of silently
+    // picking one result.
+    let report = mediator.dispatch_many_aggregated(&tasks, &executor);
+
+    for item in &report.items {
+        let agreement = if item.duplicate_count > 1 {
+            format!(" [{} sub agents agreed]", item.duplicate_count)
+        } else {
+            String::new()
+        };
+        println!(
+            "{}: {} ({}){agreement}",
+            outcome_label(item.outcome),
+            item.summary,
+            item.description
+        );
+    }
+    for conflict in &report.conflicts {
+        println!(
+            "conflict: sub agents disagreed on \"{}\"; resolved as {}",
+            conflict.description,
+            outcome_label(conflict.resolved_outcome)
+        );
+        for (outcome, summary) in &conflict.results {
+            println!("  - {}: {summary}", outcome_label(*outcome));
         }
+    }
+    for denied in &report.denied {
+        println!("denied: {} ({})", denied.reason, denied.description);
     }
     Ok(())
 }

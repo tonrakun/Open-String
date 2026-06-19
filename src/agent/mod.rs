@@ -4,15 +4,17 @@ mod confirmation;
 mod executor;
 mod mediator;
 mod result;
+mod scope;
 mod sub_agent;
 mod task;
 mod tools;
 
-pub use aggregate::{AggregatedItem, AggregatedReport, Conflict};
+pub use aggregate::AggregatedReport;
 pub use claude_executor::ClaudeTaskExecutor;
 pub use confirmation::{CliConfirmationPrompt, ConfirmationPrompt};
 pub use executor::TaskExecutor;
 pub use mediator::{DispatchError, Mediator, MediatorConfig};
 pub use result::{TaskOutcome, TaskResult};
+pub use scope::TaskScope;
 pub use sub_agent::SubAgent;
 pub use task::Task;

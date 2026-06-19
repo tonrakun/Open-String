@@ -213,7 +213,7 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 - [ ] ユーザー（チャット/TUI/GUI経由）と自然言語で対話する唯一の主体として実装する
 - [x] Mediator自身は作業系ツール（検索・ファイル操作・コマンド実行等）を原則実行しない。実行が必要な場合は必ずSub Agentを生成して委譲する（`Mediator`構造体に作業系ツール実行コードは存在せず、`dispatch`/`dispatch_many`が唯一のSub Agent生成経路、`src/agent/mediator.rs`）
 - [ ] Mediatorはt0k3n-mcp等のExtensionを「状態管理用途」で自ら呼び出す（`memory_save/get`、`session_snapshot/restore`等）
-- [ ] ユーザーからの依頼を受け、タスクを分解し、Sub Agentに渡すための専用システムプロンプト（スコープ・権限情報・利用可能ツール一覧）を生成する
+- [x] ユーザーからの依頼を受け、タスクを分解し、Sub Agentに渡すための専用システムプロンプト（スコープ・権限情報・利用可能ツール一覧）を生成する（`TaskScope::for_task`、`src/agent/scope.rs`。`Mediator::authorize`が確定した`PermissionLevel`とタスクの`read_only`から許可ツール一覧を算出し、`ClaudeTaskExecutor`はそれを`scope.describe()`としてシステムプロンプトに展開・ツール一覧をフィルタするのみで、ポリシー自体は決定しない。タスク分解＝ユーザー依頼の自然言語解釈は4.7.1の対話メインループ未実装のため、現状は呼び出し側がCLI引数として個々のタスクを直接渡す形）
 - [x] 権限レベルに基づく事前判定を行い、許可されたタスクのみSub Agentへ委譲する（4.1と連携。Sub Agent側には権限ロジックを持たせない）（`Mediator::authorize`が`PermissionLevel::decide`で判定し、許可されない限りSubAgentは生成されない）
 - [ ] 複数Sub Agentを並列実行した場合、各Sub Agentからの結果を集約し、ユーザー向けの自然言語応答に変換する
 - [ ] ユーザーとの対話履歴・進行中タスクの状態・ワークスペースごとのコンテキストを保持する（4.2.3と連携）
@@ -222,7 +222,7 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 - [x] 1タスクにつき1体のSub Agentを都度生成する（タスク完了後は破棄、状態を持ち越さない）（`SubAgent::run`は`self`を消費するため一度しか実行できない、`src/agent/sub_agent.rs`）
 - [x] システムプロンプトにより、自然言語によるナレーション・実況・説明文の出力を明示的に禁止する（例：「Webを検索します」「ファイルを読み込んでいます」等の文言を一切出力しない）（`ClaudeTaskExecutor`の`SUB_AGENT_SYSTEM_PROMPT`で明示的に禁止、`src/agent/claude_executor.rs`）
 - [x] Sub Agentの出力は、作業結果・成果物パス・状態変化・エラー情報等に限定する（`TaskResult { outcome, summary }`のみを返却、ナレーション用の出力経路は存在しない）
-- [ ] 作業系ツール（Web検索・ファイル操作・コマンド実行・外部MCP呼び出し等）の実行に専従する（ファイル操作・コマンド実行はClaude APIのtool useループとして実装済み。`read_file`/`write_file`/`run_command`、`src/agent/tools.rs`・`src/agent/claude_executor.rs`。Web検索・外部MCP呼び出しは未実装）
+- [ ] 作業系ツール（Web検索・ファイル操作・コマンド実行・外部MCP呼び出し等）の実行に専従する（ファイル操作・コマンド実行はClaude APIのtool useループとして実装済み。`read_file`/`write_file`/`run_command`、`src/agent/tools.rs`・`src/agent/claude_executor.rs`。基本的なWeb取得として`fetch_url`（HTTP GET、`src/agent/tools.rs`）を追加済みだが、検索エンジン統合（Web検索）と外部MCP呼び出しは未実装）
 - [ ] t0k3n-mcp等のExtensionを「作業効率化用途」で呼び出す（`read_code_skeleton/body`、`batch_read`等）
 - [x] タスク管理・メモリ管理は一切行わない（これらはMediatorの責務。4.7.1参照）（`SubAgent`にタスク管理・メモリ管理コードは存在しない）
 - [x] 権限チェックロジックを持たない（Mediatorが委譲前に判定済みのタスクのみを受け取る前提）（`src/agent/sub_agent.rs`は`permission`モジュールに一切依存しない）

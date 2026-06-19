@@ -8,6 +8,7 @@ pub enum DangerKind {
     Send,
     ExternalTransmit,
     Billing,
+    ConfigEdit,
 }
 
 impl DangerKind {
@@ -17,6 +18,7 @@ impl DangerKind {
             DangerKind::Send => "send",
             DangerKind::ExternalTransmit => "external-transmit",
             DangerKind::Billing => "billing",
+            DangerKind::ConfigEdit => "config-edit",
         }
     }
 }
@@ -40,6 +42,33 @@ const BILLING_KEYWORDS: &[&str] = &[
     "subscribe",
     "課金",
 ];
+/// Self-edits to Core's own config/MCP settings (5.4's "Mediator主導による
+/// Extension動的導入" still requires user confirmation before such an edit
+/// is allowed to slip through unattended).
+const CONFIG_EDIT_KEYWORDS: &[&str] = &[
+    "edit mcp.json",
+    "edit mcp config",
+    "edit settings.json",
+    "edit core config",
+    "modify mcp config",
+    "modify settings.json",
+    "modify core config",
+    "update mcp config",
+    "update settings.json",
+    "update core config",
+    "write to settings.json",
+    "write to mcp.json",
+    "rewrite mcp config",
+    "change mcp config",
+    ".open-string/config",
+    "claude_desktop_config",
+    "mcp設定を変更",
+    "mcp設定を編集",
+    "コンフィグを編集",
+    "コンフィグを変更",
+    "設定ファイルを編集",
+    "設定ファイルを変更",
+];
 
 /// Classifies a free-text operation description (e.g. a planned tool call
 /// or shell command) into zero or more dangerous categories. Matching is a
@@ -59,6 +88,9 @@ pub fn classify(operation: &str) -> Vec<DangerKind> {
     }
     if contains_any(&lower, BILLING_KEYWORDS) {
         kinds.push(DangerKind::Billing);
+    }
+    if contains_any(&lower, CONFIG_EDIT_KEYWORDS) {
+        kinds.push(DangerKind::ConfigEdit);
     }
     kinds
 }
@@ -115,5 +147,27 @@ mod tests {
     fn benign_operations_are_not_dangerous() {
         assert!(classify("read the config file").is_empty());
         assert!(classify("list directory contents").is_empty());
+    }
+
+    #[test]
+    fn classifies_mcp_and_core_config_self_edits() {
+        assert_eq!(
+            classify("edit mcp.json to add a new server"),
+            vec![DangerKind::ConfigEdit]
+        );
+        assert_eq!(
+            classify("update settings.json with the new permission level"),
+            vec![DangerKind::ConfigEdit]
+        );
+        assert_eq!(
+            classify("コンフィグを編集して権限を変える"),
+            vec![DangerKind::ConfigEdit]
+        );
+    }
+
+    #[test]
+    fn merely_reading_a_config_file_is_not_flagged_as_config_edit() {
+        assert!(classify("read the mcp config").is_empty());
+        assert!(classify("設定ファイルを読み込む").is_empty());
     }
 }

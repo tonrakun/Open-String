@@ -51,6 +51,25 @@ pub fn run_command_tool() -> ToolDefinition {
     }
 }
 
+/// Basic web access (4.7.2): a single HTTP GET, not a search engine. There
+/// is no search-provider integration yet, so this only covers "fetch a
+/// known URL", not "search the web for X".
+pub fn fetch_url_tool() -> ToolDefinition {
+    ToolDefinition {
+        name: "fetch_url".to_string(),
+        description:
+            "Fetch a URL via HTTP GET and return the response body as text (truncated if very large)."
+                .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "url": { "type": "string", "description": "The URL to fetch." }
+            },
+            "required": ["url"]
+        }),
+    }
+}
+
 /// Executes one tool call by name. Returns the text to send back as the
 /// `tool_result` content on success, or an error message to send back as
 /// an error `tool_result` on failure (4.7.3: the Sub Agent itself decides
@@ -69,7 +88,39 @@ pub fn execute(name: &str, input: &serde_json::Value) -> Result<String, String> 
                 .map_err(|e| format!("failed to write {path}: {e}"))
         }
         "run_command" => run_shell_command(string_arg(input, "command")?),
+        "fetch_url" => fetch_url(string_arg(input, "url")?),
         other => Err(format!("unknown tool: {other}")),
+    }
+}
+
+/// Cap on how much of a fetched response body gets handed back, so a large
+/// page can't blow up the Sub Agent's context (4.7.3's "compress to what's
+/// minimally sufficient" applies just as much to tool results as to the
+/// final summary).
+const MAX_FETCH_CHARS: usize = 20_000;
+
+fn fetch_url(url: &str) -> Result<String, String> {
+    let response =
+        reqwest::blocking::get(url).map_err(|e| format!("failed to fetch {url}: {e}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|e| format!("failed to read response body from {url}: {e}"))?;
+    let truncated = truncate_chars(&body, MAX_FETCH_CHARS);
+    if status.is_success() {
+        Ok(truncated)
+    } else {
+        Err(format!("{url} returned status {status}: {truncated}"))
+    }
+}
+
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let mut truncated: String = s.chars().take(max_chars).collect();
+        truncated.push_str("... [truncated]");
+        truncated
     }
 }
 
@@ -152,5 +203,58 @@ mod tests {
     fn unknown_tool_name_is_an_error() {
         let err = execute("delete_universe", &serde_json::json!({})).unwrap_err();
         assert!(err.contains("unknown tool"));
+    }
+
+    #[test]
+    fn fetch_url_returns_the_response_body() {
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET).path("/page");
+            then.status(200).body("hello from the web");
+        });
+
+        let result = execute(
+            "fetch_url",
+            &serde_json::json!({"url": format!("{}/page", server.base_url())}),
+        )
+        .unwrap();
+
+        assert_eq!(result, "hello from the web");
+    }
+
+    #[test]
+    fn fetch_url_reports_non_success_status_as_an_error() {
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET).path("/missing");
+            then.status(404).body("not found");
+        });
+
+        let err = execute(
+            "fetch_url",
+            &serde_json::json!({"url": format!("{}/missing", server.base_url())}),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("404"));
+    }
+
+    #[test]
+    fn fetch_url_truncates_very_large_bodies() {
+        let server = httpmock::MockServer::start();
+        let big_body = "x".repeat(MAX_FETCH_CHARS + 500);
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET).path("/big");
+            then.status(200).body(big_body.clone());
+        });
+
+        let result = execute(
+            "fetch_url",
+            &serde_json::json!({"url": format!("{}/big", server.base_url())}),
+        )
+        .unwrap();
+
+        assert!(result.ends_with("... [truncated]"));
+        assert!(result.len() < big_body.len());
     }
 }

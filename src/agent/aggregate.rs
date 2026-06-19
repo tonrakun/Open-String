@@ -23,11 +23,19 @@ pub struct Conflict {
     pub results: Vec<(TaskOutcome, String)>,
 }
 
+/// A task the Mediator's permission pre-check rejected before any Sub
+/// Agent was generated for it (`reason` is the `DispatchError`'s message).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeniedTask {
+    pub description: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AggregatedReport {
     pub items: Vec<AggregatedItem>,
     pub conflicts: Vec<Conflict>,
-    pub denied: Vec<String>,
+    pub denied: Vec<DeniedTask>,
 }
 
 pub(super) fn compute(
@@ -50,7 +58,10 @@ pub(super) fn compute(
                     .or_default()
                     .push((r.outcome, r.summary.as_str()));
             }
-            Err(_) => denied.push(task.description.clone()),
+            Err(e) => denied.push(DeniedTask {
+                description: task.description.clone(),
+                reason: e.to_string(),
+            }),
         }
     }
 
@@ -148,10 +159,7 @@ mod tests {
 
     #[test]
     fn outcome_ties_resolve_to_failure() {
-        let tasks = vec![
-            Task::new("deploy service"),
-            Task::new("deploy service"),
-        ];
+        let tasks = vec![Task::new("deploy service"), Task::new("deploy service")];
         let results = vec![
             Ok(TaskResult::success("deployed")),
             Ok(TaskResult::failure("timed out")),
@@ -173,7 +181,9 @@ mod tests {
 
         let report = compute(&tasks, &results);
 
-        assert_eq!(report.denied, vec!["write a file".to_string()]);
+        assert_eq!(report.denied.len(), 1);
+        assert_eq!(report.denied[0].description, "write a file");
+        assert_eq!(report.denied[0].reason, DispatchError::Denied.to_string());
         assert_eq!(report.items.len(), 1);
     }
 

@@ -1,5 +1,7 @@
 use super::aggregate::compute as compute_aggregate;
-use super::{AggregatedReport, ConfirmationPrompt, SubAgent, Task, TaskExecutor, TaskResult};
+use super::{
+    AggregatedReport, ConfirmationPrompt, SubAgent, Task, TaskExecutor, TaskResult, TaskScope,
+};
 use crate::permission::{
     AuditDecision, AuditEntry, AuditLogger, PermissionDecision, PermissionLevel, PermissionStore,
     classify_danger,
@@ -65,9 +67,10 @@ impl<'a> Mediator<'a> {
         task: &Task,
         executor: &dyn TaskExecutor,
     ) -> Result<TaskResult, DispatchError> {
-        self.authorize(task)?;
+        let level = self.authorize(task)?;
+        let scope = TaskScope::for_task(task, level);
         let sub_agent = SubAgent::new(executor);
-        Ok(sub_agent.run(task))
+        Ok(sub_agent.run(task, &scope))
     }
 
     /// Runs multiple tasks as parallel Sub Agents (4.7.4), capped at
@@ -83,25 +86,25 @@ impl<'a> Mediator<'a> {
     ) -> Vec<Result<TaskResult, DispatchError>> {
         let mut results: Vec<Option<Result<TaskResult, DispatchError>>> =
             (0..tasks.len()).map(|_| None).collect();
-        let mut authorized_indices = Vec::new();
+        let mut authorized: Vec<(usize, TaskScope)> = Vec::new();
 
         for (i, task) in tasks.iter().enumerate() {
             match self.authorize(task) {
-                Ok(()) => authorized_indices.push(i),
+                Ok(level) => authorized.push((i, TaskScope::for_task(task, level))),
                 Err(e) => results[i] = Some(Err(e)),
             }
         }
 
         let max_parallel = self.config.max_parallel_sub_agents.max(1);
-        for chunk in authorized_indices.chunks(max_parallel) {
+        for chunk in authorized.chunks(max_parallel) {
             std::thread::scope(|scope| {
                 let handles: Vec<_> = chunk
                     .iter()
-                    .map(|&i| {
-                        let task = &tasks[i];
+                    .map(|(i, task_scope)| {
+                        let task = &tasks[*i];
                         scope.spawn(move || {
                             let sub_agent = SubAgent::new(executor);
-                            (i, sub_agent.run(task))
+                            (*i, sub_agent.run(task, task_scope))
                         })
                     })
                     .collect();
@@ -142,7 +145,7 @@ impl<'a> Mediator<'a> {
         self.aggregate(tasks, &results)
     }
 
-    fn authorize(&self, task: &Task) -> Result<(), DispatchError> {
+    fn authorize(&self, task: &Task) -> Result<PermissionLevel, DispatchError> {
         let level = self
             .permission_store
             .load()
@@ -152,12 +155,12 @@ impl<'a> Mediator<'a> {
         match level.decide(&danger, task.read_only) {
             PermissionDecision::AutoAllow => {
                 self.log(level, task, AuditDecision::Allowed);
-                Ok(())
+                Ok(level)
             }
             PermissionDecision::RequireConfirmation => {
                 if self.confirmation.confirm(&task.description) {
                     self.log(level, task, AuditDecision::ConfirmedByUser);
-                    Ok(())
+                    Ok(level)
                 } else {
                     self.log(level, task, AuditDecision::DeclinedByUser);
                     Err(DispatchError::Denied)
@@ -227,7 +230,7 @@ mod tests {
     }
 
     impl TaskExecutor for CountingExecutor {
-        fn execute(&self, task: &Task) -> TaskResult {
+        fn execute(&self, task: &Task, _scope: &TaskScope) -> TaskResult {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let current = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_concurrent_seen
