@@ -1,19 +1,7 @@
+use super::system_prompt::{ExtensionInfo, SystemPromptBuilder};
 use super::tools;
 use super::{Task, TaskExecutor, TaskResult, TaskScope};
 use crate::llm::{ClaudeClient, ClaudeError, ContentBlock, Message, ToolDefinition};
-
-/// Enforces 4.7.2's narration ban: a Sub Agent must report only the work
-/// outcome, never describe what it is about to do or is doing.
-const SUB_AGENT_SYSTEM_PROMPT: &str = "You are a disposable Sub Agent in the Open String \
-system. You execute exactly one task and then terminate; you carry no state between \
-invocations. Never narrate, explain, or describe what you are about to do or are doing \
-(for example, never say things like \"I will search the web\" or \"Reading the file now\"). \
-Respond only with the final result: the work outcome, any produced artifact paths, state \
-changes, or error information. Compress your response to whatever is minimally sufficient \
-for the Mediator to make its next decision.";
-
-const READ_ONLY_SUFFIX: &str = "\n\nThis task is read-only: do not perform any write, \
-delete, send, or otherwise irreversible action.";
 
 /// Upper bound on tool-call round trips for a single task, so a confused or
 /// looping model can't keep a disposable Sub Agent running forever (4.7.2).
@@ -22,14 +10,30 @@ const MAX_TOOL_ITERATIONS: usize = 8;
 /// Real Sub Agent executor backed by the Claude API (replaces
 /// `EchoTaskExecutor` for production use). Drives a tool-use loop so the
 /// Sub Agent can actually perform file operations and run commands, not
-/// just produce text (4.7.2).
+/// just produce text (4.7.2). The system prompt sent to the model is
+/// assembled from fragments rather than fixed (4.2.1): the narration-ban
+/// and permission-level rules always apply, an Extension fragment is added
+/// only for Extensions actually connected to this executor, and the
+/// read-only suffix is added only when the scope warrants it.
 pub struct ClaudeTaskExecutor<'a> {
     client: &'a ClaudeClient,
+    extensions: Vec<ExtensionInfo>,
 }
 
 impl<'a> ClaudeTaskExecutor<'a> {
     pub fn new(client: &'a ClaudeClient) -> Self {
-        Self { client }
+        Self {
+            client,
+            extensions: Vec::new(),
+        }
+    }
+
+    /// Registers the Extensions connected for this run so their usage
+    /// instructions are injected into the system prompt (4.2.1). Extensions
+    /// not passed here contribute no prompt fragment.
+    pub fn with_extensions(mut self, extensions: Vec<ExtensionInfo>) -> Self {
+        self.extensions = extensions;
+        self
     }
 }
 
@@ -44,10 +48,10 @@ impl TaskExecutor for ClaudeTaskExecutor<'_> {
         // executor only renders that scope into the model-facing system
         // prompt and tool list, it does not decide tool access itself
         // (4.7.2's "tool access itself is scope-limited").
-        let mut system = format!("{SUB_AGENT_SYSTEM_PROMPT}\n\n{}", scope.describe());
-        if scope.is_read_only() {
-            system.push_str(READ_ONLY_SUFFIX);
-        }
+        let system = SystemPromptBuilder::new(scope.permission_level, scope.is_read_only())
+            .with_scope_description(scope.describe())
+            .with_extensions(&self.extensions)
+            .build();
 
         let available_tools: Vec<ToolDefinition> = scope
             .allowed_tools
@@ -162,16 +166,15 @@ mod tests {
     fn read_only_task_sends_the_read_only_system_suffix() {
         let task = Task::read_only("inspect config");
         let scope = TaskScope::for_task(&task, PermissionLevel::HighProtect);
-        let expected_system = format!(
-            "{SUB_AGENT_SYSTEM_PROMPT}\n\n{}{READ_ONLY_SUFFIX}",
-            scope.describe()
-        );
 
         let server = MockServer::start();
         let mock = server.mock(|when, then| {
-            when.method(POST)
-                .path("/v1/messages")
-                .json_body_partial(serde_json::json!({"system": expected_system}).to_string());
+            when.method(POST).path("/v1/messages").matches(|req| {
+                body_contains(req, "disposable Sub Agent")
+                    && body_contains(req, "high protect")
+                    && body_contains(req, "Tools available for this task: read_file, fetch_url")
+                    && body_contains(req, "read-only: do not perform")
+            });
             then.status(200).json_body(serde_json::json!({
                 "content": [{"type": "text", "text": "done"}]
             }));

@@ -9,6 +9,7 @@ mod respond;
 mod result;
 mod scope;
 mod sub_agent;
+mod system_prompt;
 mod task;
 mod tools;
 
@@ -23,4 +24,5 @@ pub use respond::{natural_language_response, render_report};
 pub use result::{TaskOutcome, TaskResult};
 pub use scope::TaskScope;
 pub use sub_agent::SubAgent;
+pub use system_prompt::{SystemPromptBuilder, load_connected_extensions};
 pub use task::Task;

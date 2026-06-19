@@ -124,13 +124,13 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 ### 4.2 コンテキスト管理（最重要）
 
 #### 4.2.1 システムプロンプトの動的構築
-- [ ] 固定巨大プロンプトを廃し、状況に応じた断片組み立て方式を採用
-- [ ] 現在の権限レベルに応じたプロンプト断片の切り替え
-- [ ] 接続中Extension一覧に応じたツール説明の動的注入（未接続Extensionの説明は注入しない）
-- [ ] t0k3n-mcp等、公式Extensionの「利用を促す指示（instructions）」をシステムプロンプトに標準組み込み
-  - [ ] Extension側がinstructionsファイル/フィールドを公開している場合、それを読み込んでプロンプトに反映する仕組み
-  - [ ] instructionsが存在しない場合のフォールバック（最小限の使用ガイドをCore側で自動生成）
-- [ ] プロンプトの圧縮済みテンプレートのバージョン管理（差分更新で再構築コストを抑える）
+- [x] 固定巨大プロンプトを廃し、状況に応じた断片組み立て方式を採用（`SystemPromptBuilder`、`src/agent/system_prompt.rs`。narration-ban/permission/extension/read-onlyの各断片を組み合わせて生成し、固定文字列定数は廃止）
+- [x] 現在の権限レベルに応じたプロンプト断片の切り替え（`permission_fragment(PermissionLevel)`が4段階それぞれの断片を返す）
+- [x] 接続中Extension一覧に応じたツール説明の動的注入（未接続Extensionの説明は注入しない）（`SystemPromptBuilder::with_extensions`は渡されたExtensionのみ`## {name} usage`断片を追加し、未接続のものは一切言及しない）
+- [x] t0k3n-mcp等、公式Extensionの「利用を促す指示（instructions）」をシステムプロンプトに標準組み込み（`ExtensionInfo::fragment`が各接続Extensionの利用指示を組み込む）
+  - [x] Extension側がinstructionsファイル/フィールドを公開している場合、それを読み込んでプロンプトに反映する仕組み（`load_connected_extensions`が`extensions.json`マニフェストの`instructions_path`を読み込む）
+  - [x] instructionsが存在しない場合のフォールバック（最小限の使用ガイドをCore側で自動生成）（`ExtensionInfo::fallback_instructions`）
+- [x] プロンプトの圧縮済みテンプレートのバージョン管理（差分更新で再構築コストを抑える）（各`Fragment`が`(id, version)`を持ち、`SystemPromptBuilder::template_versions`で取得可能。CLI `agent prompt-versions`で確認可能）
 
 #### 4.2.2 会話履歴・応答ログの管理（Core管轄、コード読み込みとは別軸）
 - [ ] チャット/TUI/GUI由来の発話ログの自動要約（古い履歴から段階的に圧縮）

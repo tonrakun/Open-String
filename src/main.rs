@@ -6,8 +6,8 @@ mod prompt;
 
 use agent::{
     ClaudeTaskExecutor, CliConfirmationPrompt, CtxAgentConfig, DispatchError, FileMemoryStore,
-    Mediator, MediatorConfig, MediatorTurn, Task, TaskOutcome, compact, natural_language_response,
-    render_report, should_compact,
+    Mediator, MediatorConfig, MediatorTurn, SystemPromptBuilder, Task, TaskOutcome, compact,
+    natural_language_response, render_report, should_compact,
 };
 use auth::{AnthropicApiKeyProvider, AuthProvider, validate_api_key_format};
 use clap::{Parser, Subcommand};
@@ -138,6 +138,18 @@ enum AgentAction {
         #[arg(long)]
         max_parallel: Option<usize>,
     },
+    /// Print the (id, version) of every system-prompt fragment that would
+    /// be assembled for the current permission level (4.2.1: プロンプトの
+    /// 圧縮済みテンプレートのバージョン管理)
+    PromptVersions {
+        /// Report the fragment set used for read-only tasks
+        #[arg(long)]
+        read_only: bool,
+        /// Evaluate against this workspace's permission override instead
+        /// of the global default
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -191,6 +203,7 @@ fn main() {
                     &provider,
                     description,
                     read_only,
+                    workspace.as_deref(),
                 )
             }),
             AgentAction::RunTasks {
@@ -206,8 +219,14 @@ fn main() {
                     descriptions,
                     read_only,
                     max_parallel,
+                    workspace.as_deref(),
                 )
             }),
+            AgentAction::PromptVersions {
+                read_only,
+                workspace,
+            } => permission_store_for(workspace.as_deref())
+                .and_then(|store| prompt_versions(store.as_ref(), read_only)),
         },
         Command::Chat {
             workspace,
@@ -222,6 +241,7 @@ fn main() {
                 max_parallel,
                 ctx_trigger_threshold_pct,
                 ctx_target_size_pct,
+                workspace.as_deref(),
             )
         }),
     };
@@ -303,6 +323,21 @@ fn permission_status(store: &dyn PermissionStore) -> Result<(), String> {
     Ok(())
 }
 
+/// Implements 4.2.1's template-version management: prints the fragments a
+/// system prompt would draw from for the current permission level, so a
+/// fragment change can be diffed/tracked across releases without having to
+/// re-render a full prompt by hand.
+fn prompt_versions(store: &dyn PermissionStore, read_only: bool) -> Result<(), String> {
+    let level = store
+        .load()
+        .map_err(|e| format!("failed to read permission level: {e}"))?;
+    let builder = SystemPromptBuilder::new(level, read_only);
+    for (id, version) in builder.template_versions() {
+        println!("{id} v{version}");
+    }
+    Ok(())
+}
+
 fn permission_set(
     store: &dyn PermissionStore,
     audit_logger: &dyn AuditLogger,
@@ -376,6 +411,7 @@ fn run_task(
     provider: &dyn AuthProvider,
     description: String,
     read_only: bool,
+    workspace: Option<&std::path::Path>,
 ) -> Result<(), String> {
     let client = claude_client_from_stored_key(provider)?;
     let confirmation = CliConfirmationPrompt;
@@ -385,7 +421,8 @@ fn run_task(
     } else {
         Task::new(description)
     };
-    let executor = ClaudeTaskExecutor::new(&client);
+    let executor = ClaudeTaskExecutor::new(&client)
+        .with_extensions(agent::load_connected_extensions(workspace));
 
     match mediator.dispatch(&task, &executor) {
         Ok(result) => {
@@ -408,6 +445,7 @@ fn run_tasks(
     descriptions: Vec<String>,
     read_only: bool,
     max_parallel: Option<usize>,
+    workspace: Option<&std::path::Path>,
 ) -> Result<(), String> {
     let client = claude_client_from_stored_key(provider)?;
     let confirmation = CliConfirmationPrompt;
@@ -427,7 +465,8 @@ fn run_tasks(
             }
         })
         .collect();
-    let executor = ClaudeTaskExecutor::new(&client);
+    let executor = ClaudeTaskExecutor::new(&client)
+        .with_extensions(agent::load_connected_extensions(workspace));
 
     // The Mediator aggregates results across the batch (4.7.4): agreeing
     // Sub Agents collapse into one line, disagreeing ones surface as a
@@ -464,6 +503,7 @@ fn chat(
     max_parallel: Option<usize>,
     ctx_trigger_threshold_pct: Option<u8>,
     ctx_target_size_pct: Option<u8>,
+    workspace: Option<&std::path::Path>,
 ) -> Result<(), String> {
     let client = claude_client_from_stored_key(provider)?;
     let confirmation = CliConfirmationPrompt;
@@ -473,7 +513,8 @@ fn chat(
             max_parallel_sub_agents,
         });
     }
-    let executor = ClaudeTaskExecutor::new(&client);
+    let executor = ClaudeTaskExecutor::new(&client)
+        .with_extensions(agent::load_connected_extensions(workspace));
     let mut history: Vec<Message> = Vec::new();
     let mut ctx_config = CtxAgentConfig::default();
     if let Some(pct) = ctx_trigger_threshold_pct {
