@@ -12,17 +12,31 @@ capability belongs solely to disposable Sub Agents you delegate to. When the use
 requires actual execution (reading or writing files, running commands, fetching web content, \
 or any other concrete action), call the `delegate_tasks` tool with one or more self-contained \
 task descriptions for Sub Agents to carry out; mark a task's `read_only` field true only if it \
-performs no write, delete, send, or other irreversible action. For anything that needs no \
-execution -- greetings, questions about your own capabilities, clarification requests, or \
-anything answerable from the conversation alone -- respond directly in natural language \
-without calling the tool.";
+performs no write, delete, send, or other irreversible action. When the user explicitly asks \
+to connect, add, or use a new MCP server Extension by name (e.g. \"I want to use the X MCP \
+server\"), call `propose_extension` instead -- this only stages the request for the user's \
+explicit confirmation and never connects anything itself; never call it unless the user named \
+a specific server they want. For anything that needs no execution -- greetings, questions \
+about your own capabilities, clarification requests, or anything answerable from the \
+conversation alone -- respond directly in natural language without calling either tool.";
 
 /// What came out of interpreting one user message: either the Mediator
-/// answers directly, or it has decomposed the request into `Task`s for the
-/// caller to dispatch through `Mediator::dispatch_many`.
+/// answers directly, it has decomposed the request into `Task`s for the
+/// caller to dispatch through `Mediator::dispatch_many`, or it is proposing
+/// a new MCP server Extension for the caller to confirm and add (5.4).
 pub enum MediatorTurn {
     Direct(String),
     Delegated(Vec<Task>),
+    ProposeExtension(ProposedExtension),
+}
+
+/// An Extension connection the Mediator wants to add, awaiting the user's
+/// explicit confirmation (5.4's "確認を得た上で設定変更を実行するフロー").
+pub struct ProposedExtension {
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub reason: String,
 }
 
 pub fn delegate_tasks_tool() -> ToolDefinition {
@@ -59,6 +73,39 @@ pub fn delegate_tasks_tool() -> ToolDefinition {
     }
 }
 
+pub fn propose_extension_tool() -> ToolDefinition {
+    ToolDefinition {
+        name: "propose_extension".to_string(),
+        description: "Stage a request to connect a new MCP server Extension for the user's \
+            explicit confirmation. Call this only when the user named a specific server they \
+            want to use; it never connects anything by itself."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Short identifier for the server, used as its .mcp.json key."
+                },
+                "command": {
+                    "type": "string",
+                    "description": "Executable to launch the server with."
+                },
+                "args": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Arguments passed to the command, if any."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "One sentence explaining why this server is being proposed."
+                }
+            },
+            "required": ["name", "command", "reason"]
+        }),
+    }
+}
+
 /// Interprets the latest user message against the conversation so far,
 /// deciding whether it can be answered directly or must be decomposed into
 /// `Task`s. This is the Mediator's own model call -- distinct from a Sub
@@ -75,7 +122,7 @@ pub fn plan(
     let response = client.send(
         MEDIATOR_CHAT_SYSTEM_PROMPT,
         &messages,
-        &[delegate_tasks_tool()],
+        &[delegate_tasks_tool(), propose_extension_tool()],
     )?;
 
     if response.stop_reason != "tool_use" {
@@ -91,20 +138,36 @@ pub fn plan(
         return Ok(MediatorTurn::Direct(text));
     }
 
-    let input = response
+    let tool_use = response
         .blocks
         .into_iter()
         .find_map(|block| match block {
-            ContentBlock::ToolUse { name, input, .. } if name == "delegate_tasks" => Some(input),
+            ContentBlock::ToolUse { name, input, .. }
+                if name == "delegate_tasks" || name == "propose_extension" =>
+            {
+                Some((name, input))
+            }
             _ => None,
         })
         .ok_or_else(|| {
             ClaudeError::UnexpectedResponse(
-                "model signalled tool_use but did not call delegate_tasks".to_string(),
+                "model signalled tool_use but did not call a known tool".to_string(),
             )
         })?;
 
-    let parsed: DelegatedTasks = serde_json::from_value(input).map_err(|e| {
+    if tool_use.0 == "propose_extension" {
+        let parsed: ProposedExtensionInput = serde_json::from_value(tool_use.1).map_err(|e| {
+            ClaudeError::UnexpectedResponse(format!("malformed propose_extension input: {e}"))
+        })?;
+        return Ok(MediatorTurn::ProposeExtension(ProposedExtension {
+            name: parsed.name,
+            command: parsed.command,
+            args: parsed.args,
+            reason: parsed.reason,
+        }));
+    }
+
+    let parsed: DelegatedTasks = serde_json::from_value(tool_use.1).map_err(|e| {
         ClaudeError::UnexpectedResponse(format!("malformed delegate_tasks input: {e}"))
     })?;
 
@@ -135,6 +198,15 @@ struct DelegatedTask {
     read_only: bool,
 }
 
+#[derive(serde::Deserialize)]
+struct ProposedExtensionInput {
+    name: String,
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+    reason: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +230,7 @@ mod tests {
         match turn {
             MediatorTurn::Direct(text) => assert_eq!(text, "Hi! I'm the Open String Mediator."),
             MediatorTurn::Delegated(_) => panic!("expected a direct reply"),
+            MediatorTurn::ProposeExtension(_) => panic!("expected a direct reply"),
         }
     }
 
@@ -194,6 +267,7 @@ mod tests {
                 assert!(!tasks[1].read_only);
             }
             MediatorTurn::Direct(_) => panic!("expected delegated tasks"),
+            MediatorTurn::ProposeExtension(_) => panic!("expected delegated tasks"),
         }
     }
 
@@ -217,5 +291,40 @@ mod tests {
         let result = plan(&client, &[], "do something");
 
         assert!(matches!(result, Err(ClaudeError::UnexpectedResponse(_))));
+    }
+
+    #[test]
+    fn propose_extension_tool_use_is_parsed_into_a_proposal() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/messages");
+            then.status(200).json_body(serde_json::json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "propose_extension",
+                    "input": {
+                        "name": "weather",
+                        "command": "weather-mcp",
+                        "args": ["--stdio"],
+                        "reason": "user asked to check the forecast"
+                    }
+                }],
+                "stop_reason": "tool_use"
+            }));
+        });
+
+        let client = ClaudeClient::new("sk-ant-test").with_base_url(server.base_url());
+        let turn = plan(&client, &[], "I want to use the weather MCP server").unwrap();
+
+        match turn {
+            MediatorTurn::ProposeExtension(proposal) => {
+                assert_eq!(proposal.name, "weather");
+                assert_eq!(proposal.command, "weather-mcp");
+                assert_eq!(proposal.args, vec!["--stdio".to_string()]);
+                assert_eq!(proposal.reason, "user asked to check the forecast");
+            }
+            _ => panic!("expected a proposed extension"),
+        }
     }
 }

@@ -20,6 +20,7 @@ pub struct McpClient {
     stdout: Box<dyn BufRead + Send>,
     next_id: u64,
     server_info: Option<(String, String)>,
+    protocol_version: Option<String>,
 }
 
 impl McpClient {
@@ -56,6 +57,7 @@ impl McpClient {
             stdout,
             next_id: 1,
             server_info: None,
+            protocol_version: None,
         };
         client.initialize()?;
         Ok(client)
@@ -72,6 +74,30 @@ impl McpClient {
             .map(|(name, version)| (name.as_str(), version.as_str()))
     }
 
+    /// The protocol version the server actually negotiated, from the
+    /// `initialize` response's `protocolVersion` field. `None` when the
+    /// server omitted it (treated as compatible, since there is nothing to
+    /// compare).
+    pub fn negotiated_protocol_version(&self) -> Option<&str> {
+        self.protocol_version.as_deref()
+    }
+
+    /// The MCP protocol version this client requests during `initialize`.
+    pub fn supported_protocol_version() -> &'static str {
+        MCP_PROTOCOL_VERSION
+    }
+
+    /// Whether the server's negotiated protocol version matches the one
+    /// this client requested (5.3's "互換性検証（Extension側のプロトコル
+    /// バージョンチェック）"). A server that omits `protocolVersion`
+    /// entirely is treated as compatible -- Open String has no MCP
+    /// implementation old enough to need stricter enforcement than that.
+    pub fn is_protocol_compatible(&self) -> bool {
+        self.protocol_version
+            .as_deref()
+            .is_none_or(|v| v == MCP_PROTOCOL_VERSION)
+    }
+
     fn initialize(&mut self) -> Result<(), McpError> {
         let result = self.request(
             "initialize",
@@ -85,6 +111,9 @@ impl McpClient {
             let name = info.get("name").and_then(Value::as_str).unwrap_or("");
             let version = info.get("version").and_then(Value::as_str).unwrap_or("");
             self.server_info = Some((name.to_string(), version.to_string()));
+        }
+        if let Some(version) = result.get("protocolVersion").and_then(Value::as_str) {
+            self.protocol_version = Some(version.to_string());
         }
         self.notify("notifications/initialized", json!({}))
     }
@@ -211,6 +240,31 @@ mod tests {
         let (client, _written) =
             client_with_canned_responses(&[r#"{"jsonrpc":"2.0","id":1,"result":{}}"#]);
         assert_eq!(client.server_info(), None);
+    }
+
+    #[test]
+    fn matching_protocol_version_is_compatible() {
+        let (client, _written) = client_with_canned_responses(&[
+            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}"#,
+        ]);
+        assert_eq!(client.negotiated_protocol_version(), Some("2024-11-05"));
+        assert!(client.is_protocol_compatible());
+    }
+
+    #[test]
+    fn mismatched_protocol_version_is_incompatible() {
+        let (client, _written) = client_with_canned_responses(&[
+            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2023-01-01"}}"#,
+        ]);
+        assert!(!client.is_protocol_compatible());
+    }
+
+    #[test]
+    fn missing_protocol_version_is_treated_as_compatible() {
+        let (client, _written) =
+            client_with_canned_responses(&[r#"{"jsonrpc":"2.0","id":1,"result":{}}"#]);
+        assert_eq!(client.negotiated_protocol_version(), None);
+        assert!(client.is_protocol_compatible());
     }
 
     #[test]

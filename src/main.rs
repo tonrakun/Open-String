@@ -9,17 +9,19 @@ mod session;
 mod skills;
 
 use agent::{
-    ClaudeTaskExecutor, CliConfirmationPrompt, CtxAgentConfig, DispatchError, FileMemoryStore,
-    FileProgressMemoStore, Mediator, MediatorConfig, MediatorTurn, MemoryStore, ProgressMemoStore,
-    SystemPromptBuilder, Task, TaskOutcome, clear_stale_tool_results, compact, is_phase_boundary,
-    natural_language_response, render_report, should_compact,
+    ClaudeTaskExecutor, CliConfirmationPrompt, ConfirmationPrompt, CtxAgentConfig, DispatchError,
+    FileMemoryStore, FileProgressMemoStore, Mediator, MediatorConfig, MediatorTurn, MemoryStore,
+    ProgressMemoStore, ProposedExtension, SystemPromptBuilder, Task, TaskOutcome,
+    clear_stale_tool_results, compact, is_phase_boundary, natural_language_response, render_report,
+    should_compact,
 };
 use auth::{AnthropicApiKeyProvider, AuthProvider, validate_api_key_format};
 use clap::{Parser, Subcommand};
 use llm::{ClaudeClient, Message};
 use permission::{
-    AuditDecision, AuditEntry, AuditLogger, FileAuditLogger, FilePermissionStore, PermissionLevel,
-    PermissionStore, WorkspacePermissionStore,
+    AuditDecision, AuditEntry, AuditLogger, FileAuditLogger, FilePermissionStore,
+    PermissionDecision, PermissionLevel, PermissionStore, WorkspacePermissionStore,
+    classify_danger,
 };
 use session::{
     FileSessionRegistry, FileWorkspaceRegistry, SessionRegistry, Workspace, WorkspaceRegistry,
@@ -792,6 +794,13 @@ fn extension_check(
 
     let mut client = mcp::McpClient::connect(&entry.command, &entry.args)
         .map_err(|e| format!("failed to connect to \"{name}\": {e}"))?;
+    if !client.is_protocol_compatible() {
+        eprintln!(
+            "warning: \"{name}\" negotiated protocol version {} but Core requested {}",
+            client.negotiated_protocol_version().unwrap_or("unknown"),
+            mcp::McpClient::supported_protocol_version()
+        );
+    }
     let tools = client
         .list_tools()
         .map_err(|e| format!("connected to \"{name}\" but failed to list its tools: {e}"))?;
@@ -1263,6 +1272,58 @@ fn chat(
                 history.push(Message::user_text(input));
                 history.push(Message::assistant_text(reply));
             }
+            Ok(MediatorTurn::ProposeExtension(proposal)) => {
+                // 5.4's "Mediator主導によるExtension動的導入" must still pass
+                // through the same danger-classification/confirmation gate
+                // as any other self-edit of Core's own config (`ConfigEdit`
+                // in `permission::danger`), even though it didn't arrive as
+                // a delegated `Task`.
+                let operation = format!(
+                    "edit mcp config to add extension \"{}\" ({}): {}",
+                    proposal.name, proposal.command, proposal.reason
+                );
+                let danger = classify_danger(&operation);
+                let reply = match permission_level.decide(&danger, false) {
+                    PermissionDecision::AutoAllow => {
+                        log_audit(
+                            audit_logger,
+                            permission_level,
+                            &operation,
+                            AuditDecision::Allowed,
+                        );
+                        apply_proposed_extension(workspace, &proposal)
+                    }
+                    PermissionDecision::RequireConfirmation => {
+                        let summary = format!(
+                            "Connect new Extension \"{}\"?\n  command: {} {}\n  reason: {}",
+                            proposal.name,
+                            proposal.command,
+                            proposal.args.join(" "),
+                            proposal.reason
+                        );
+                        if confirmation.confirm(&summary) {
+                            log_audit(
+                                audit_logger,
+                                permission_level,
+                                &operation,
+                                AuditDecision::ConfirmedByUser,
+                            );
+                            apply_proposed_extension(workspace, &proposal)
+                        } else {
+                            log_audit(
+                                audit_logger,
+                                permission_level,
+                                &operation,
+                                AuditDecision::DeclinedByUser,
+                            );
+                            format!("Declined to connect \"{}\".", proposal.name)
+                        }
+                    }
+                };
+                println!("{reply}");
+                history.push(Message::user_text(input));
+                history.push(Message::assistant_text(reply));
+            }
             Err(e) => {
                 eprintln!("error: failed to interpret request: {e}");
             }
@@ -1316,6 +1377,61 @@ fn chat(
         eprintln!("warning: failed to record session end: {e}");
     }
     Ok(())
+}
+
+/// Actually performs the config edit a confirmed/auto-allowed
+/// `ProposedExtension` describes: adds the `.mcp.json` entry and, so the
+/// new Extension gets a usage fragment in the very next Sub Agent prompt
+/// (4.2.1) rather than only after a separate manual registration, an
+/// `extensions.json` manifest entry with no published instructions (it
+/// falls back to the generic "prefer its tools" guide).
+fn apply_proposed_extension(
+    workspace: Option<&std::path::Path>,
+    proposal: &ProposedExtension,
+) -> String {
+    if let Err(e) = extension_add(
+        workspace,
+        proposal.name.clone(),
+        proposal.command.clone(),
+        proposal.args.clone(),
+        None,
+        None,
+        None,
+    ) {
+        return format!("Failed to connect \"{}\": {e}", proposal.name);
+    }
+
+    // 5.4's rollback-on-failure: a server that can't be reached or fails
+    // its handshake leaves Core no better off than before, so the
+    // `.mcp.json` entry just written is removed again rather than left
+    // behind as a dead, unusable Extension.
+    let client = match mcp::McpClient::connect(&proposal.command, &proposal.args) {
+        Ok(client) => client,
+        Err(e) => {
+            let _ = extension_remove(workspace, &proposal.name);
+            return format!(
+                "Failed to connect \"{}\" ({e}); rolled back the config change.",
+                proposal.name
+            );
+        }
+    };
+
+    let warning = if client.is_protocol_compatible() {
+        String::new()
+    } else {
+        format!(
+            " (warning: negotiated protocol version {} differs from Core's {})",
+            client.negotiated_protocol_version().unwrap_or("unknown"),
+            mcp::McpClient::supported_protocol_version()
+        )
+    };
+    if let Err(e) = agent::register_extension(workspace, &proposal.name, None) {
+        eprintln!(
+            "warning: failed to register extension \"{}\" usage manifest: {e}",
+            proposal.name
+        );
+    }
+    format!("Connected Extension \"{}\".{warning}", proposal.name)
 }
 
 fn outcome_label(outcome: TaskOutcome) -> &'static str {

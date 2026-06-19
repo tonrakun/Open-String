@@ -177,12 +177,30 @@ fn check_extension_connectivity(workspace: Option<&Path>) -> Vec<HealthCheckItem
             let mut last_error = String::new();
             for _ in 0..EXTENSION_CONNECT_ATTEMPTS {
                 match mcp::McpClient::connect(&entry.command, &entry.args) {
-                    Ok(_) => {
-                        return HealthCheckItem {
-                            name: format!("extension:{name}"),
-                            severity: Severity::Info,
-                            message: "reachable".to_string(),
-                            repaired: false,
+                    Ok(client) => {
+                        // 5.3's protocol-version compatibility check: a
+                        // server is reachable but speaking a different MCP
+                        // protocol version is a Warning, not a Fatal --
+                        // Core still functions with that Extension simply
+                        // unusable (4.2.5's failure isolation).
+                        return if client.is_protocol_compatible() {
+                            HealthCheckItem {
+                                name: format!("extension:{name}"),
+                                severity: Severity::Info,
+                                message: "reachable".to_string(),
+                                repaired: false,
+                            }
+                        } else {
+                            HealthCheckItem {
+                                name: format!("extension:{name}"),
+                                severity: Severity::Warning,
+                                message: format!(
+                                    "reachable but negotiated protocol version {} differs from Core's {}",
+                                    client.negotiated_protocol_version().unwrap_or("unknown"),
+                                    mcp::McpClient::supported_protocol_version()
+                                ),
+                                repaired: false,
+                            }
                         };
                     }
                     Err(e) => last_error = e.to_string(),

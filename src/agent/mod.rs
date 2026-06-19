@@ -21,7 +21,7 @@ pub use aggregate::AggregatedReport;
 pub use bundled_extensions::auto_register_t0k3n;
 pub use claude_executor::ClaudeTaskExecutor;
 pub use confirmation::{CliConfirmationPrompt, ConfirmationPrompt};
-pub use conversation::{MediatorTurn, plan};
+pub use conversation::{MediatorTurn, ProposedExtension, plan};
 pub use ctx_agent::{
     CtxAgentConfig, FileMemoryStore, MemoryStore, clear_stale_tool_results, compact,
     is_phase_boundary, should_compact,
@@ -35,5 +35,5 @@ pub use respond::{natural_language_response, render_report};
 pub use result::{TaskOutcome, TaskResult};
 pub use scope::TaskScope;
 pub use sub_agent::SubAgent;
-pub use system_prompt::{SystemPromptBuilder, load_connected_extensions};
+pub use system_prompt::{SystemPromptBuilder, load_connected_extensions, register_extension};
 pub use task::Task;

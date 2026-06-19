@@ -278,17 +278,17 @@ Mediatorは常駐かつユーザーと長時間対話し続けるため、Sub Ag
 - [x] t0k3n-mcp無効化時の動作確認（Core単体での最低限動作保証）（`connect_workspace_tools`/`connect_for_state_management`/`health::run_health_check`はいずれも未接続・無効時にフェイルソフトし、Core本体機能（chat等）は継続動作することを既存テストで確認済み）
 
 ### 5.3 サードパーティExtension
-- [ ] 外部MCPサーバーの追加・削除UI
-- [ ] 互換性検証（Extension側のプロトコルバージョンチェック）
+- [x] 外部MCPサーバーの追加・削除UI（CLIの`extension add`/`extension remove`、および5.4のMediator経由の自然言語導入フローの双方から実行可能）
+- [x] 互換性検証（Extension側のプロトコルバージョンチェック）（`McpClient`が`initialize`応答の`protocolVersion`を記録し、`is_protocol_compatible`でCore側の要求バージョンと比較。`health::run_health_check`は不一致をFatalではなくWarningとして扱い、Core本体の動作は継続。`extension check`/Mediator導入フローでも同じ判定を再利用）
 - [ ] サードパーティExtensionのサンドボックス化検討（権限レベルとの統合）
 
 ### 5.4 Mediator主導によるExtension動的導入（新規要件）
-- [ ] ユーザーがMediatorに対し自然言語で「○○のMCPサーバーを使いたい」等を依頼した場合、Mediatorがその場でMCP設定（`.mcp.json`相当）を書き換えて導入できる仕組みを実装する
-- [ ] Mediatorによる設定ファイルの自己編集自体を「危険操作」の一種として権限レベル管理の対象に含める（4.1と連携。例：`middle permission`以上を要求等）
-- [ ] 導入対象のMCPサーバー情報（名称・接続先URL/コマンド・要求する権限スコープ）をユーザーに提示し、確認を得た上で設定変更を実行するフロー（無断導入を防止）
+- [x] ユーザーがMediatorに対し自然言語で「○○のMCPサーバーを使いたい」等を依頼した場合、Mediatorがその場でMCP設定（`.mcp.json`相当）を書き換えて導入できる仕組みを実装する（`propose_extension`ツールを介して`MediatorTurn::ProposeExtension`を返し、`chat`ループが`apply_proposed_extension`で`.mcp.json`に追記）
+- [x] Mediatorによる設定ファイルの自己編集自体を「危険操作」の一種として権限レベル管理の対象に含める（4.1と連携。例：`middle permission`以上を要求等）（`permission::danger`の`ConfigEdit`分類を流用し、`PermissionLevel::decide`の`RequireConfirmation`判定に通す）
+- [x] 導入対象のMCPサーバー情報（名称・接続先URL/コマンド・要求する権限スコープ）をユーザーに提示し、確認を得た上で設定変更を実行するフロー（無断導入を防止）（`ConfirmationPrompt::confirm`に名称・コマンド・引数・理由を含むサマリーを提示し、拒否時は`.mcp.json`を書き換えずに終了）
 - [ ] 導入後、5.5のホットリロード機構と連携し、Core再起動なしで即座に利用可能にする
 - [ ] 導入したMCPサーバーが信頼できないソース（未知の接続先等）である場合の警告表示
-- [ ] 導入失敗時（接続不能・認証エラー等）のロールバック（設定ファイルを導入前の状態に復元）
+- [x] 導入失敗時（接続不能・認証エラー等）のロールバック（設定ファイルを導入前の状態に復元）（`apply_proposed_extension`が追加直後に`McpClient::connect`で接続確認し、失敗時は`extension_remove`で`.mcp.json`を導入前の状態に戻す）
 
 ### 5.5 Extension/エージェント動作コンフィグのホットリロード（新規要件）
 - [ ] MCPサーバー・SKILLSの追加・削除・設定変更をCore再起動なしで即時反映する仕組みを実装する
