@@ -6,7 +6,8 @@ mod prompt;
 
 use agent::{
     ClaudeTaskExecutor, CliConfirmationPrompt, CtxAgentConfig, DispatchError, FileMemoryStore,
-    Mediator, MediatorConfig, MediatorTurn, SystemPromptBuilder, Task, TaskOutcome, compact,
+    FileProgressMemoStore, Mediator, MediatorConfig, MediatorTurn, ProgressMemoStore,
+    SystemPromptBuilder, Task, TaskOutcome, clear_stale_tool_results, compact, is_phase_boundary,
     natural_language_response, render_report, should_compact,
 };
 use auth::{AnthropicApiKeyProvider, AuthProvider, validate_api_key_format};
@@ -524,6 +525,19 @@ fn chat(
         ctx_config.target_size_pct = pct;
     }
     let memory = FileMemoryStore::new()?;
+    let progress = FileProgressMemoStore::new()?;
+
+    // 4.2.2's external-memo escape hatch: completed/unresolved work from a
+    // prior session was written to the progress memo even after that
+    // session's history was compacted or lost. Read it back now so this
+    // session doesn't have to re-derive it from scratch.
+    if let Ok(notes) = progress.load()
+        && !notes.trim().is_empty()
+    {
+        history.push(Message::assistant_text(format!(
+            "(progress notes carried over from a previous session)\n{notes}"
+        )));
+    }
 
     println!("Open String chat. Type a request, or \"exit\"/\"quit\" to leave.");
     loop {
@@ -545,6 +559,7 @@ fn chat(
             break;
         }
 
+        let mut phase_boundary = false;
         match agent::plan(&client, &history, input) {
             Ok(MediatorTurn::Direct(text)) => {
                 println!("{text}");
@@ -553,6 +568,27 @@ fn chat(
             }
             Ok(MediatorTurn::Delegated(tasks)) => {
                 let report = mediator.dispatch_many_aggregated(&tasks, &executor);
+                phase_boundary = is_phase_boundary(&report);
+
+                // 4.2.2's external-memo escape hatch: record completed work
+                // and anything left unresolved outside the conversation
+                // history itself, so a later compaction's prose summary
+                // isn't the only place that information lives.
+                for item in &report.items {
+                    if item.outcome == TaskOutcome::Success {
+                        let _ = progress.record_completed(&item.description);
+                    }
+                }
+                for conflict in &report.conflicts {
+                    let _ = progress.record_unresolved(&format!(
+                        "conflicting result: {}",
+                        conflict.description
+                    ));
+                }
+                for denial in &report.denied {
+                    let _ = progress.record_unresolved(&format!("denied: {}", denial.description));
+                }
+
                 let reply = match natural_language_response(&client, &report) {
                     Ok(reply) => reply,
                     Err(_) => render_report(&report),
@@ -566,7 +602,22 @@ fn chat(
             }
         }
 
-        if should_compact(&history, MEDIATOR_CONTEXT_WINDOW_TOKENS, &ctx_config) {
+        // Lightweight first-line defense (4.2.2), run on every turn rather
+        // than only once `should_compact` trips: cheaper than a full
+        // Ctx Agent pass, so it absorbs growth from any tool-call traffic
+        // that ends up in `history` without waiting for the threshold.
+        history = clear_stale_tool_results(&history, ctx_config.keep_recent_turns);
+
+        // A clean phase boundary (a batch with no conflicts or denials) is
+        // also a trigger on its own once there is a meaningful "older"
+        // portion to summarize, so the Mediator doesn't have to wait for
+        // the token threshold to checkpoint a natural stopping point.
+        let phase_boundary_ready =
+            phase_boundary && history.len() > ctx_config.keep_recent_turns * 2;
+
+        if should_compact(&history, MEDIATOR_CONTEXT_WINDOW_TOKENS, &ctx_config)
+            || phase_boundary_ready
+        {
             match compact(
                 &client,
                 &history,

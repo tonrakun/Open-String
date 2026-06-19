@@ -5,6 +5,7 @@ mod conversation;
 mod ctx_agent;
 mod executor;
 mod mediator;
+mod progress;
 mod respond;
 mod result;
 mod scope;
@@ -17,9 +18,13 @@ pub use aggregate::AggregatedReport;
 pub use claude_executor::ClaudeTaskExecutor;
 pub use confirmation::{CliConfirmationPrompt, ConfirmationPrompt};
 pub use conversation::{MediatorTurn, plan};
-pub use ctx_agent::{CtxAgentConfig, FileMemoryStore, compact, should_compact};
+pub use ctx_agent::{
+    CtxAgentConfig, FileMemoryStore, clear_stale_tool_results, compact, is_phase_boundary,
+    should_compact,
+};
 pub use executor::TaskExecutor;
 pub use mediator::{DispatchError, Mediator, MediatorConfig};
+pub use progress::{FileProgressMemoStore, ProgressMemoStore};
 pub use respond::{natural_language_response, render_report};
 pub use result::{TaskOutcome, TaskResult};
 pub use scope::TaskScope;
