@@ -1,4 +1,5 @@
 mod aggregate;
+mod bundled_extensions;
 mod claude_executor;
 mod confirmation;
 mod conversation;
@@ -17,6 +18,7 @@ mod task;
 mod tools;
 
 pub use aggregate::AggregatedReport;
+pub use bundled_extensions::auto_register_t0k3n;
 pub use claude_executor::ClaudeTaskExecutor;
 pub use confirmation::{CliConfirmationPrompt, ConfirmationPrompt};
 pub use conversation::{MediatorTurn, plan};

@@ -574,6 +574,15 @@ fn workspace_create(path: &std::path::Path, name: Option<String>) -> Result<(), 
         workspace.path.display()
     );
 
+    // 5.2: register the official t0k3n-mcp bundle automatically if it's
+    // already installed, before the connectivity smoke test below so a
+    // freshly-registered entry gets checked too.
+    match agent::auto_register_t0k3n(&workspace.path) {
+        Ok(true) => println!("Registered the official t0k3n-mcp extension."),
+        Ok(false) => {}
+        Err(e) => eprintln!("warning: failed to register the t0k3n-mcp extension: {e}"),
+    }
+
     // 4.2.5's "新規ワークスペース作成時に対応Extensionの自動セットアップ":
     // a one-time smoke test that every Extension already configured for
     // this workspace is reachable, run right after creation rather than

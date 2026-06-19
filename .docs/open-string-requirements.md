@@ -271,11 +271,11 @@ Mediatorは常駐かつユーザーと長時間対話し続けるため、Sub Ag
 - [x] Extensionごとの権限スコープ設定（Extensionが要求する権限とCoreの権限レベルの整合性チェック）（`McpServerConfig::required_permission_level`+`is_compatible_with`、`src/mcp/config.rs`。`open-string extension check`が接続前にCoreの現在権限レベルとの整合性を検証）
 
 ### 5.2 公式Extension: t0k3n-mcp バンドル
-- [ ] t0k3n-mcpをデフォルトバンドルとして同封
-- [ ] `.mcp.json`相当の設定をCoreが自動生成（新規ワークスペース作成時、4.2.5と連携）
-- [ ] t0k3n-mcpのinstructions/ドキュメントをCoreのプロンプト構築ロジックに自動連携（4.2.1と連携）
-- [ ] t0k3n-mcpのバージョン情報取得・表示
-- [ ] t0k3n-mcp無効化時の動作確認（Core単体での最低限動作保証）
+- [x] t0k3n-mcpをデフォルトバンドルとして同封（`agent::auto_register_t0k3n`、`src/agent/bundled_extensions.rs`・`src/mcp/bundled.rs`。実体のバイナリを同封するのではなく、`tonrakun/t0k3n-mcp`公式install.sh/install.ps1のインストール先（`~/.t0k3n-mcp/t0k3n`、Windowsは`%USERPROFILE%\t0k3n-mcp\t0k3n.exe`）またはPATH上に検出した場合のみ自動登録する設計。無断インストールはしない（5.4の「無断導入を防止」と同方針）)
+- [x] `.mcp.json`相当の設定をCoreが自動生成（新規ワークスペース作成時、4.2.5と連携）（`workspace create`実行時に`mcp::default_server_config`で`--root`をワークスペースに固定したエントリを自動生成、未インストール時は何もしない）
+- [x] t0k3n-mcpのinstructions/ドキュメントをCoreのプロンプト構築ロジックに自動連携（4.2.1と連携）（t0k3n-mcpはMCPの`initialize`で独自instructionsを公開しないため、Core側で用意した要約文を`.open-string/t0k3n-instructions.md`として書き出し、`agent::system_prompt::register_extension`で`extensions.json`に登録。4.2.1の`load_connected_extensions`がこれを読み込みシステムプロンプトに反映)
+- [x] t0k3n-mcpのバージョン情報取得・表示（`McpClient::server_info`が`initialize`応答の`serverInfo.version`を取得し、`open-string extension check-updates`で表示。4.2.5と共通の汎用機構）
+- [x] t0k3n-mcp無効化時の動作確認（Core単体での最低限動作保証）（`connect_workspace_tools`/`connect_for_state_management`/`health::run_health_check`はいずれも未接続・無効時にフェイルソフトし、Core本体機能（chat等）は継続動作することを既存テストで確認済み）
 
 ### 5.3 サードパーティExtension
 - [ ] 外部MCPサーバーの追加・削除UI

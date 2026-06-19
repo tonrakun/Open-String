@@ -119,10 +119,40 @@ equivalents when one covers the same need.",
 /// the current directory when no workspace is given.
 pub const EXTENSIONS_MANIFEST_FILE: &str = "extensions.json";
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct ExtensionManifestEntry {
     name: String,
     instructions_path: Option<String>,
+}
+
+/// Upserts one entry in the connected-Extensions manifest by name (5.2's
+/// "instructions/ドキュメントをCoreのプロンプト構築ロジックに自動連携",
+/// reused by any Extension that wants to publish instructions, not just
+/// the bundled one). A missing or corrupt manifest is treated as empty
+/// rather than failing, mirroring `load_connected_extensions`'s own
+/// fail-soft policy.
+pub fn register_extension(
+    workspace: Option<&Path>,
+    name: &str,
+    instructions_path: Option<&str>,
+) -> Result<(), String> {
+    let manifest_path = match workspace {
+        Some(dir) => dir.join(EXTENSIONS_MANIFEST_FILE),
+        None => Path::new(EXTENSIONS_MANIFEST_FILE).to_path_buf(),
+    };
+
+    let mut entries: Vec<ExtensionManifestEntry> = std::fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    entries.retain(|entry| entry.name != name);
+    entries.push(ExtensionManifestEntry {
+        name: name.to_string(),
+        instructions_path: instructions_path.map(|p| p.to_string()),
+    });
+
+    let json = serde_json::to_string_pretty(&entries).map_err(|e| e.to_string())?;
+    std::fs::write(&manifest_path, json).map_err(|e| e.to_string())
 }
 
 /// Reads the connected-Extensions manifest, if any, and resolves each
