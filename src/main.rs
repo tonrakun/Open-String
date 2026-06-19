@@ -5,8 +5,9 @@ mod permission;
 mod prompt;
 
 use agent::{
-    ClaudeTaskExecutor, CliConfirmationPrompt, DispatchError, Mediator, MediatorConfig,
-    MediatorTurn, Task, TaskOutcome, natural_language_response, render_report,
+    ClaudeTaskExecutor, CliConfirmationPrompt, CtxAgentConfig, DispatchError, FileMemoryStore,
+    Mediator, MediatorConfig, MediatorTurn, Task, TaskOutcome, compact, natural_language_response,
+    render_report, should_compact,
 };
 use auth::{AnthropicApiKeyProvider, AuthProvider, validate_api_key_format};
 use clap::{Parser, Subcommand};
@@ -53,8 +54,22 @@ enum Command {
         /// Maximum number of Sub Agents to run at once for a single turn
         #[arg(long)]
         max_parallel: Option<usize>,
+        /// Ctx Agent trigger threshold, as a percentage of the model's
+        /// context window at which conversation history gets compacted (4.7.5)
+        #[arg(long)]
+        ctx_trigger_threshold_pct: Option<u8>,
+        /// Ctx Agent compaction target, as a percentage of the model's
+        /// context window the summarized history should shrink to (4.7.5)
+        #[arg(long)]
+        ctx_target_size_pct: Option<u8>,
     },
 }
+
+/// Claude Sonnet 4.6's context window, used to evaluate the Ctx Agent's
+/// percentage-based trigger and target thresholds (4.7.5). Core has no
+/// Models API call wired in to look this up at runtime (4.2.4), so it is
+/// hardcoded alongside `llm::client::DEFAULT_MODEL`.
+const MEDIATOR_CONTEXT_WINDOW_TOKENS: usize = 1_000_000;
 
 #[derive(Subcommand)]
 enum AuthAction {
@@ -197,8 +212,18 @@ fn main() {
         Command::Chat {
             workspace,
             max_parallel,
-        } => permission_store_for(workspace.as_deref())
-            .and_then(|store| chat(store.as_ref(), &audit_logger, &provider, max_parallel)),
+            ctx_trigger_threshold_pct,
+            ctx_target_size_pct,
+        } => permission_store_for(workspace.as_deref()).and_then(|store| {
+            chat(
+                store.as_ref(),
+                &audit_logger,
+                &provider,
+                max_parallel,
+                ctx_trigger_threshold_pct,
+                ctx_target_size_pct,
+            )
+        }),
     };
 
     if let Err(message) = result {
@@ -427,11 +452,18 @@ fn run_tasks(
 /// history (4.2.2's "原則含めない" requirement) -- only the user's text and
 /// the Mediator's natural-language reply are retained, so this session's
 /// turns stay readable to the model on every subsequent call.
+///
+/// After every completed turn (never mid-response, per 4.7.5's "現在進行中
+/// のターンが完了した時点で") the Ctx Agent's trigger check runs against the
+/// accumulated history; once it crosses the threshold, `compact` summarizes
+/// and hands the Mediator a replacement history before the next prompt.
 fn chat(
     store: &dyn PermissionStore,
     audit_logger: &dyn AuditLogger,
     provider: &dyn AuthProvider,
     max_parallel: Option<usize>,
+    ctx_trigger_threshold_pct: Option<u8>,
+    ctx_target_size_pct: Option<u8>,
 ) -> Result<(), String> {
     let client = claude_client_from_stored_key(provider)?;
     let confirmation = CliConfirmationPrompt;
@@ -443,6 +475,14 @@ fn chat(
     }
     let executor = ClaudeTaskExecutor::new(&client);
     let mut history: Vec<Message> = Vec::new();
+    let mut ctx_config = CtxAgentConfig::default();
+    if let Some(pct) = ctx_trigger_threshold_pct {
+        ctx_config.trigger_threshold_pct = pct;
+    }
+    if let Some(pct) = ctx_target_size_pct {
+        ctx_config.target_size_pct = pct;
+    }
+    let memory = FileMemoryStore::new()?;
 
     println!("Open String chat. Type a request, or \"exit\"/\"quit\" to leave.");
     loop {
@@ -482,6 +522,28 @@ fn chat(
             }
             Err(e) => {
                 eprintln!("error: failed to interpret request: {e}");
+            }
+        }
+
+        if should_compact(&history, MEDIATOR_CONTEXT_WINDOW_TOKENS, &ctx_config) {
+            match compact(
+                &client,
+                &history,
+                &memory,
+                MEDIATOR_CONTEXT_WINDOW_TOKENS,
+                &ctx_config,
+            ) {
+                Ok(compacted) => {
+                    eprintln!(
+                        "note: conversation history compacted by the Ctx Agent (full history saved to memory)."
+                    );
+                    history = compacted;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "warning: Ctx Agent compaction failed, continuing with uncompacted history: {e}"
+                    );
+                }
             }
         }
     }
