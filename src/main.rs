@@ -5,12 +5,12 @@ mod permission;
 mod prompt;
 
 use agent::{
-    ClaudeTaskExecutor, CliConfirmationPrompt, DispatchError, Mediator, MediatorConfig, Task,
-    TaskOutcome, natural_language_response,
+    ClaudeTaskExecutor, CliConfirmationPrompt, DispatchError, Mediator, MediatorConfig,
+    MediatorTurn, Task, TaskOutcome, natural_language_response, render_report,
 };
 use auth::{AnthropicApiKeyProvider, AuthProvider, validate_api_key_format};
 use clap::{Parser, Subcommand};
-use llm::ClaudeClient;
+use llm::{ClaudeClient, Message};
 use permission::{
     AuditDecision, AuditEntry, AuditLogger, FileAuditLogger, FilePermissionStore, PermissionLevel,
     PermissionStore, WorkspacePermissionStore,
@@ -41,6 +41,18 @@ enum Command {
     Agent {
         #[command(subcommand)]
         action: AgentAction,
+    },
+    /// Start an interactive natural-language session with the Mediator
+    /// (4.7.1): free-form requests are interpreted turn by turn, decomposed
+    /// into Sub Agent tasks when execution is needed, and dispatched.
+    Chat {
+        /// Run the permission pre-check against this workspace's override
+        /// instead of the global default
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+        /// Maximum number of Sub Agents to run at once for a single turn
+        #[arg(long)]
+        max_parallel: Option<usize>,
     },
 }
 
@@ -182,6 +194,11 @@ fn main() {
                 )
             }),
         },
+        Command::Chat {
+            workspace,
+            max_parallel,
+        } => permission_store_for(workspace.as_deref())
+            .and_then(|store| chat(store.as_ref(), &audit_logger, &provider, max_parallel)),
     };
 
     if let Err(message) = result {
@@ -400,6 +417,73 @@ fn run_tasks(
     match natural_language_response(&client, &report) {
         Ok(response) => println!("{response}"),
         Err(_) => print_structured_report(&report),
+    }
+    Ok(())
+}
+
+/// Interactive Mediator session (4.7.1): each line of input is interpreted
+/// by `agent::plan`, which decides whether it needs Sub Agent dispatch or
+/// can be answered directly. Tool-call mechanics never enter the kept
+/// history (4.2.2's "原則含めない" requirement) -- only the user's text and
+/// the Mediator's natural-language reply are retained, so this session's
+/// turns stay readable to the model on every subsequent call.
+fn chat(
+    store: &dyn PermissionStore,
+    audit_logger: &dyn AuditLogger,
+    provider: &dyn AuthProvider,
+    max_parallel: Option<usize>,
+) -> Result<(), String> {
+    let client = claude_client_from_stored_key(provider)?;
+    let confirmation = CliConfirmationPrompt;
+    let mut mediator = Mediator::new(store, &confirmation, audit_logger);
+    if let Some(max_parallel_sub_agents) = max_parallel {
+        mediator = mediator.with_config(MediatorConfig {
+            max_parallel_sub_agents,
+        });
+    }
+    let executor = ClaudeTaskExecutor::new(&client);
+    let mut history: Vec<Message> = Vec::new();
+
+    println!("Open String chat. Type a request, or \"exit\"/\"quit\" to leave.");
+    loop {
+        print!("> ");
+        std::io::stdout().flush().map_err(|e| e.to_string())?;
+
+        let mut line = String::new();
+        let bytes_read = std::io::stdin()
+            .read_line(&mut line)
+            .map_err(|e| e.to_string())?;
+        if bytes_read == 0 {
+            break;
+        }
+        let input = line.trim();
+        if input.is_empty() {
+            continue;
+        }
+        if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {
+            break;
+        }
+
+        match agent::plan(&client, &history, input) {
+            Ok(MediatorTurn::Direct(text)) => {
+                println!("{text}");
+                history.push(Message::user_text(input));
+                history.push(Message::assistant_text(text));
+            }
+            Ok(MediatorTurn::Delegated(tasks)) => {
+                let report = mediator.dispatch_many_aggregated(&tasks, &executor);
+                let reply = match natural_language_response(&client, &report) {
+                    Ok(reply) => reply,
+                    Err(_) => render_report(&report),
+                };
+                println!("{reply}");
+                history.push(Message::user_text(input));
+                history.push(Message::assistant_text(reply));
+            }
+            Err(e) => {
+                eprintln!("error: failed to interpret request: {e}");
+            }
+        }
     }
     Ok(())
 }

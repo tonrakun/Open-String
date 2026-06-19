@@ -210,10 +210,10 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 ### 4.7 Mediator Agent / Sub Agent 分離アーキテクチャ（中核設計）
 
 #### 4.7.1 Mediator Agent（仲介者・常駐）
-- [ ] ユーザー（チャット/TUI/GUI経由）と自然言語で対話する唯一の主体として実装する
+- [x] ユーザー（チャット/TUI/GUI経由）と自然言語で対話する唯一の主体として実装する（CLI版の対話ループとして`open-string chat`を実装。`agent::plan`（`src/agent/conversation.rs`）が各ユーザー発話をClaudeへ送り、実行が必要なら`delegate_tasks`ツール呼び出しで`Task`群に分解、不要ならそのまま自然言語で直接応答。`main.rs`の`chat`関数がdirect応答とdelegated応答（`Mediator::dispatch_many_aggregated`→`natural_language_response`）を1ループで仲介し、ツール呼び出しの内部過程は履歴に残さずユーザー発話と最終応答のみを保持する。TUI/GUI版は4.3で別途実装）
 - [x] Mediator自身は作業系ツール（検索・ファイル操作・コマンド実行等）を原則実行しない。実行が必要な場合は必ずSub Agentを生成して委譲する（`Mediator`構造体に作業系ツール実行コードは存在せず、`dispatch`/`dispatch_many`が唯一のSub Agent生成経路、`src/agent/mediator.rs`）
 - [ ] Mediatorはt0k3n-mcp等のExtensionを「状態管理用途」で自ら呼び出す（`memory_save/get`、`session_snapshot/restore`等）
-- [x] ユーザーからの依頼を受け、タスクを分解し、Sub Agentに渡すための専用システムプロンプト（スコープ・権限情報・利用可能ツール一覧）を生成する（`TaskScope::for_task`、`src/agent/scope.rs`。`Mediator::authorize`が確定した`PermissionLevel`とタスクの`read_only`から許可ツール一覧を算出し、`ClaudeTaskExecutor`はそれを`scope.describe()`としてシステムプロンプトに展開・ツール一覧をフィルタするのみで、ポリシー自体は決定しない。タスク分解＝ユーザー依頼の自然言語解釈は4.7.1の対話メインループ未実装のため、現状は呼び出し側がCLI引数として個々のタスクを直接渡す形）
+- [x] ユーザーからの依頼を受け、タスクを分解し、Sub Agentに渡すための専用システムプロンプト（スコープ・権限情報・利用可能ツール一覧）を生成する（`TaskScope::for_task`、`src/agent/scope.rs`。`Mediator::authorize`が確定した`PermissionLevel`とタスクの`read_only`から許可ツール一覧を算出し、`ClaudeTaskExecutor`はそれを`scope.describe()`としてシステムプロンプトに展開・ツール一覧をフィルタするのみで、ポリシー自体は決定しない。タスク分解＝ユーザー依頼の自然言語解釈は`agent::plan`（4.7.1の対話メインループ）が担い、CLI引数で個々のタスクを直接渡す`agent run-task(s)`系コマンドは引き続きスクリプト用途として残置）
 - [x] 権限レベルに基づく事前判定を行い、許可されたタスクのみSub Agentへ委譲する（4.1と連携。Sub Agent側には権限ロジックを持たせない）（`Mediator::authorize`が`PermissionLevel::decide`で判定し、許可されない限りSubAgentは生成されない）
 - [x] 複数Sub Agentを並列実行した場合、各Sub Agentからの結果を集約し、ユーザー向けの自然言語応答に変換する（`agent::natural_language_response`、`src/agent/respond.rs`。`AggregatedReport`をMediatorがClaudeClientへ直接渡し、自然言語の応答文に変換。API失敗時は構造化レポートの表示にフォールバック、`main.rs`の`print_structured_report`）
 - [ ] ユーザーとの対話履歴・進行中タスクの状態・ワークスペースごとのコンテキストを保持する（4.2.3と連携）

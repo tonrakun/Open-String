@@ -119,6 +119,13 @@ impl Message {
         }
     }
 
+    pub fn assistant_text(text: impl Into<String>) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text { text: text.into() }],
+        }
+    }
+
     pub fn assistant_blocks(content: Vec<ContentBlock>) -> Self {
         Self {
             role: "assistant".to_string(),
