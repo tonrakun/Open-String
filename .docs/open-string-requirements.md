@@ -155,12 +155,12 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 - [ ] t0k3n-mcp不在時のフォールバック（簡易skeleton抽出ロジックをCore内に最低限保持するかは検討事項。4.2.5参照）
 
 #### 4.2.5 外部Extensionのライフサイクル管理（新規要件）
-- [ ] 新規ワークスペース作成時に対応Extensionの自動セットアップを実行する仕組み（例：t0k3n-mcpの`setup`相当コマンドを自動実行）
-- [ ] 定期的なExtensionのバージョンチェック・自動アップグレード実行スケジューラ（例：t0k3n-mcpの`upgrade`相当コマンドを定期実行）
-- [ ] アップグレード失敗時のロールバック機構
-- [ ] Extensionバージョン不整合の検知とユーザーへの通知
-- [ ] Extension障害時のフェイルセーフ（Extension停止中でもCore本体機能は継続動作）
-- [ ] Extensionごとのライフサイクル設定（自動更新の有効/無効、更新頻度）をユーザーが上書き可能にする
+- [x] 新規ワークスペース作成時に対応Extensionの自動セットアップを実行する仕組み（例：t0k3n-mcpの`setup`相当コマンドを自動実行）（`mcp::setup_workspace_extensions`、`src/mcp/lifecycle.rs`。`workspace create`実行直後に設定済みの全Extensionへ接続スモークテストを実行し結果を表示。MCPプロトコル自体に`setup`相当のRPCは存在しないため、接続可否の検証として実装）
+- [x] 定期的なExtensionのバージョンチェック・自動アップグレード実行スケジューラ（例：t0k3n-mcpの`upgrade`相当コマンドを定期実行）（`mcp::check_for_updates`/`open-string extension check-updates`、`src/mcp/lifecycle.rs`。`initialize`ハンドシェイクの`serverInfo.version`を比較してバージョン変化を検知。常駐デーモンが存在しないため「定期」は`chat`起動時など既存の実行タイミングに相乗りする設計とし、本物のOSスケジューラ連携は未実装と明記。MCPに標準の`upgrade`RPCは存在しないため「自動アップグレード」は再接続→バージョン再検出に留まる）
+- [x] アップグレード失敗時のロールバック機構（接続失敗時は`lastKnownVersion`/`lastCheckedAt`を更新せず直前の既知良好状態を保持。OSパッケージ管理レベルの実体的なダウングレードは行わない設計上の制約を明記）
+- [x] Extensionバージョン不整合の検知とユーザーへの通知（`LifecycleOutcome::VersionChanged`を`extension check-updates`が表示）
+- [x] Extension障害時のフェイルセーフ（Extension停止中でもCore本体機能は継続動作）（`connect_workspace_tools`/`connect_for_state_management`/ヘルスチェックいずれも接続失敗時はフェイルソフト。`src/agent/mcp_tools.rs`・`src/agent/mcp_memory.rs`・`src/health.rs`）
+- [x] Extensionごとのライフサイクル設定（自動更新の有効/無効、更新頻度）をユーザーが上書き可能にする（`McpServerConfig::auto_update`/`update_check_interval_hours`、`open-string extension lifecycle`コマンド）
 
 #### 4.2.6 コンテキスト隔離によるトークン削減（Mediator/Sub Agent分離、最重要）
 - [x] ユーザー対話とツール実行を完全に分離する設計を採用する（詳細設計は4.7）。これはt0k3n-mcpが担うファイル/コード読み込み最適化とは独立した、別軸のトークン削減源として位置づける（Mediator(`src/agent/mediator.rs`)はSub Agent生成・結果集約のみを行い、ツール実行コードを一切持たない。ツール実行は`ClaudeTaskExecutor`/`SubAgent`に完全分離）
@@ -198,14 +198,14 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 
 ### 4.6 セルフヘルスチェック・自己修復（新規要件）
 
-- [ ] Core自身の起動時ヘルスチェック（バイナリ整合性、設定ファイル整合性、Extension接続状態）
-- [ ] 定期ヘルスチェックのスケジューリング
-- [ ] エラー検知時の自動分類（致命的/警告/情報）
-- [ ] 自動リトライ機構（一時的なネットワーク/Extension接続エラー等）
-- [ ] 自己修正ロジック（設定ファイルの破損検知時のデフォルト復元、依存Extensionの再インストール試行等）
-- [ ] 自己修復不能と判断した場合のユーザーへの明示的エスカレーション（god mode等で無断修復させない設計）
-- [ ] ヘルスチェック結果・自己修復履歴のダッシュボード表示（4.3と連携）
-- [ ] 自己修復処理自体の権限レベル適用（自己修復もリスクのある操作のため、middle permission以上を要求等）
+- [x] Core自身の起動時ヘルスチェック（バイナリ整合性、設定ファイル整合性、Extension接続状態）（`health::run_health_check`、`src/health.rs`。`chat`起動時に自動実行し、`open-string health`で単独実行も可能）
+- [x] 定期ヘルスチェックのスケジューリング（常駐デーモンがないため、`chat`起動など既存の実行タイミングに相乗りする設計とした。OSスケジューラ（cron/Task Scheduler）連携による真の定期実行は未実装）
+- [x] エラー検知時の自動分類（致命的/警告/情報）（`health::Severity::{Fatal,Warning,Info}`）
+- [x] 自動リトライ機構（一時的なネットワーク/Extension接続エラー等）（Extension接続チェックは`EXTENSION_CONNECT_ATTEMPTS`回まで再試行、`src/health.rs`）
+- [x] 自己修正ロジック（設定ファイルの破損検知時のデフォルト復元、依存Extensionの再インストール試行等）（`.mcp.json`破損時は破損ファイルを`.corrupt`にバックアップしデフォルト復元。Extensionの再インストール試行はOS依存のため対象外）
+- [x] 自己修復不能と判断した場合のユーザーへの明示的エスカレーション（god mode等で無断修復させない設計）（修復不能時は`Severity::Fatal`としてユーザーへ表示しつつCoreは継続動作。god mode下でも無断修復はしない）
+- [x] ヘルスチェック結果・自己修復履歴のダッシュボード表示（4.3と連携）（`open-string health`が`HealthReport`を表示。TUI/GUI連携自体は4.3実装時に対応）
+- [x] 自己修復処理自体の権限レベル適用（自己修復もリスクのある操作のため、middle permission以上を要求等）（`health::can_self_repair`がhigh-protect未満の権限レベルでのみ自動修復を許可）
 
 ### 4.7 Mediator Agent / Sub Agent 分離アーキテクチャ（中核設計）
 

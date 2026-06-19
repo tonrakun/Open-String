@@ -1,5 +1,6 @@
 mod agent;
 mod auth;
+mod health;
 mod llm;
 mod mcp;
 mod permission;
@@ -64,6 +65,12 @@ enum Command {
     Extension {
         #[command(subcommand)]
         action: ExtensionAction,
+    },
+    /// Run Core's self health check (4.6): binary integrity, `.mcp.json`
+    /// integrity, and Extension connectivity
+    Health {
+        #[arg(long)]
+        workspace: Option<PathBuf>,
     },
     /// Start an interactive natural-language session with the Mediator
     /// (4.7.1): free-form requests are interpreted turn by turn, decomposed
@@ -218,6 +225,25 @@ enum ExtensionAction {
     /// verifying both connectivity and permission-level compatibility
     Check {
         name: String,
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Override a server's lifecycle settings (4.2.5): automatic version
+    /// checks and how often they run
+    Lifecycle {
+        name: String,
+        #[arg(long)]
+        auto_update: Option<bool>,
+        /// Minimum hours between version checks; pass 0 to check every run
+        #[arg(long)]
+        update_check_interval_hours: Option<u64>,
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Re-check every configured server for a self-reported version change
+    /// since the last check (4.2.5); a server that fails to connect keeps
+    /// its last known-good version rather than being cleared
+    CheckUpdates {
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
@@ -409,7 +435,26 @@ fn main() {
                 permission_store_for(workspace.as_deref())
                     .and_then(|store| extension_check(store.as_ref(), workspace.as_deref(), &name))
             }
+            ExtensionAction::Lifecycle {
+                name,
+                auto_update,
+                update_check_interval_hours,
+                workspace,
+            } => extension_lifecycle(
+                resolve_workspace(workspace).as_deref(),
+                &name,
+                auto_update,
+                update_check_interval_hours,
+            ),
+            ExtensionAction::CheckUpdates { workspace } => {
+                extension_check_updates(resolve_workspace(workspace).as_deref())
+            }
         },
+        Command::Health { workspace } => {
+            let workspace = resolve_workspace(workspace);
+            permission_store_for(workspace.as_deref())
+                .and_then(|store| health_check_command(store.as_ref(), workspace.as_deref()))
+        }
         Command::Chat {
             workspace,
             max_parallel,
@@ -528,6 +573,19 @@ fn workspace_create(path: &std::path::Path, name: Option<String>) -> Result<(), 
         workspace.name,
         workspace.path.display()
     );
+
+    // 4.2.5's "新規ワークスペース作成時に対応Extensionの自動セットアップ":
+    // a one-time smoke test that every Extension already configured for
+    // this workspace is reachable, run right after creation rather than
+    // waiting for the next periodic check.
+    match mcp::setup_workspace_extensions(Some(&workspace.path)) {
+        Ok(results) if !results.is_empty() => {
+            println!("Extension setup check:");
+            print_lifecycle_results(&results);
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("warning: extension setup check failed: {e}"),
+    }
     Ok(())
 }
 
@@ -735,6 +793,99 @@ fn extension_check(
     );
     for tool in &tools {
         println!("  {}: {}", tool.name, tool.description);
+    }
+    Ok(())
+}
+
+fn extension_lifecycle(
+    workspace: Option<&std::path::Path>,
+    name: &str,
+    auto_update: Option<bool>,
+    update_check_interval_hours: Option<u64>,
+) -> Result<(), String> {
+    let mut config = mcp::load(workspace)?;
+    let entry = config
+        .mcp_servers
+        .get_mut(name)
+        .ok_or_else(|| format!("no extension named \"{name}\" is configured"))?;
+    if let Some(auto_update) = auto_update {
+        entry.auto_update = auto_update;
+    }
+    if let Some(hours) = update_check_interval_hours {
+        entry.update_check_interval_hours = Some(hours);
+    }
+    let auto_update = entry.auto_update;
+    let interval_description = entry
+        .update_check_interval_hours
+        .map(|h| h.to_string())
+        .unwrap_or_else(|| "every run".to_string());
+    mcp::save(workspace, &config)?;
+    println!(
+        "Extension \"{name}\" lifecycle: auto_update={auto_update}, update_check_interval_hours={interval_description}"
+    );
+    Ok(())
+}
+
+fn print_lifecycle_results(results: &[mcp::LifecycleCheckResult]) {
+    for result in results {
+        match &result.outcome {
+            mcp::LifecycleOutcome::Unchanged { version } => println!(
+                "{}: ok (version {})",
+                result.name,
+                version.as_deref().unwrap_or("unknown")
+            ),
+            mcp::LifecycleOutcome::VersionChanged { previous, current } => println!(
+                "{}: version changed {} -> {}",
+                result.name,
+                previous.as_deref().unwrap_or("unknown"),
+                current.as_deref().unwrap_or("unknown")
+            ),
+            mcp::LifecycleOutcome::Failed { reason } => {
+                println!(
+                    "{}: failed to connect ({reason}); keeping last known state",
+                    result.name
+                )
+            }
+            mcp::LifecycleOutcome::Skipped => println!("{}: skipped", result.name),
+        }
+    }
+}
+
+fn extension_check_updates(workspace: Option<&std::path::Path>) -> Result<(), String> {
+    let results = mcp::check_for_updates(workspace)?;
+    if results.is_empty() {
+        println!("No extensions configured.");
+    } else {
+        print_lifecycle_results(&results);
+    }
+    Ok(())
+}
+
+fn print_health_report(report: &health::HealthReport) {
+    for item in &report.items {
+        let label = match item.severity {
+            health::Severity::Fatal => "FATAL",
+            health::Severity::Warning => "warning",
+            health::Severity::Info => "ok",
+        };
+        let repaired = if item.repaired { " [repaired]" } else { "" };
+        println!("[{label}] {}: {}{repaired}", item.name, item.message);
+    }
+}
+
+fn health_check_command(
+    store: &dyn PermissionStore,
+    workspace: Option<&std::path::Path>,
+) -> Result<(), String> {
+    let level = store
+        .load()
+        .map_err(|e| format!("failed to read permission level: {e}"))?;
+    let report = health::run_health_check(workspace, level);
+    print_health_report(&report);
+    if report.has_fatal() {
+        eprintln!(
+            "warning: one or more health checks are fatal and need manual attention; Core continues running regardless."
+        );
     }
     Ok(())
 }
@@ -958,6 +1109,19 @@ fn chat(
     let permission_level = store
         .load()
         .map_err(|e| format!("failed to read permission level: {e}"))?;
+
+    // 4.6's startup health check: this is also the closest thing Core has
+    // to "periodic" health/version checks, since there is no background
+    // scheduler -- every `chat` launch re-runs it.
+    let health_report = health::run_health_check(workspace, permission_level);
+    if health_report
+        .items
+        .iter()
+        .any(|i| i.severity != health::Severity::Info)
+    {
+        print_health_report(&health_report);
+    }
+
     let executor = ClaudeTaskExecutor::new(&client)
         .with_extensions(agent::load_connected_extensions(workspace))
         .with_mcp_tools(agent::connect_workspace_tools(workspace, permission_level));

@@ -9,7 +9,7 @@ pub const MCP_CONFIG_FILE: &str = ".mcp.json";
 /// One server entry in `.mcp.json`'s `mcpServers` map: how to spawn it,
 /// whether it is currently enabled, and the permission level Core must be
 /// at before connecting to it.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpServerConfig {
     pub command: String,
     #[serde(default)]
@@ -33,6 +33,44 @@ pub struct McpServerConfig {
     pub memory_save_tool: Option<String>,
     #[serde(default, rename = "memoryIndexTool")]
     pub memory_index_tool: Option<String>,
+    /// Lifecycle settings (4.2.5), user-overridable per server.
+    #[serde(default = "default_auto_update", rename = "autoUpdate")]
+    pub auto_update: bool,
+    /// Minimum hours between version-drift checks for this server. `None`
+    /// means every `extension check-updates` run checks it unconditionally.
+    #[serde(default, rename = "updateCheckIntervalHours")]
+    pub update_check_interval_hours: Option<u64>,
+    /// The server's self-reported version (`initialize`'s `serverInfo`) as
+    /// of the last successful check. Only ever advanced by a *successful*
+    /// reconnect (`check_for_updates`); a failed check leaves this at the
+    /// last known-good value instead of clearing it, which is the rollback
+    /// 4.2.5 asks for in a world where MCP has no server-side "upgrade"
+    /// or "downgrade" RPC to actually roll back against.
+    #[serde(default, rename = "lastKnownVersion")]
+    pub last_known_version: Option<String>,
+    #[serde(default, rename = "lastCheckedAt")]
+    pub last_checked_at: Option<u64>,
+}
+
+fn default_auto_update() -> bool {
+    true
+}
+
+impl Default for McpServerConfig {
+    fn default() -> Self {
+        Self {
+            command: String::new(),
+            args: Vec::new(),
+            disabled: false,
+            required_permission_level: None,
+            memory_save_tool: None,
+            memory_index_tool: None,
+            auto_update: default_auto_update(),
+            update_check_interval_hours: None,
+            last_known_version: None,
+            last_checked_at: None,
+        }
+    }
 }
 
 impl McpServerConfig {
@@ -127,10 +165,10 @@ mod tests {
             McpServerConfig {
                 command: "npx".to_string(),
                 args: vec!["-y".to_string(), "t0k3n-mcp".to_string()],
-                disabled: false,
                 required_permission_level: Some(PermissionLevel::LowSecurity),
                 memory_save_tool: Some("memory_save".to_string()),
                 memory_index_tool: Some("memory_index".to_string()),
+                ..Default::default()
             },
         );
 

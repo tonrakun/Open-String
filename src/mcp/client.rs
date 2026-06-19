@@ -19,6 +19,7 @@ pub struct McpClient {
     stdin: Box<dyn Write + Send>,
     stdout: Box<dyn BufRead + Send>,
     next_id: u64,
+    server_info: Option<(String, String)>,
 }
 
 impl McpClient {
@@ -54,13 +55,25 @@ impl McpClient {
             stdin,
             stdout,
             next_id: 1,
+            server_info: None,
         };
         client.initialize()?;
         Ok(client)
     }
 
+    /// The connected server's self-reported `(name, version)`, taken from
+    /// the `initialize` response's `serverInfo` field per the MCP spec.
+    /// `None` when the server omitted it. Used for 4.2.5's version-drift
+    /// detection -- there is no separate MCP "version check" RPC, so this
+    /// handshake field is the only protocol-level signal available.
+    pub fn server_info(&self) -> Option<(&str, &str)> {
+        self.server_info
+            .as_ref()
+            .map(|(name, version)| (name.as_str(), version.as_str()))
+    }
+
     fn initialize(&mut self) -> Result<(), McpError> {
-        self.request(
+        let result = self.request(
             "initialize",
             json!({
                 "protocolVersion": MCP_PROTOCOL_VERSION,
@@ -68,6 +81,11 @@ impl McpClient {
                 "clientInfo": {"name": "open-string", "version": env!("CARGO_PKG_VERSION")},
             }),
         )?;
+        if let Some(info) = result.get("serverInfo") {
+            let name = info.get("name").and_then(Value::as_str).unwrap_or("");
+            let version = info.get("version").and_then(Value::as_str).unwrap_or("");
+            self.server_info = Some((name.to_string(), version.to_string()));
+        }
         self.notify("notifications/initialized", json!({}))
     }
 
@@ -178,6 +196,21 @@ mod tests {
         let sent = String::from_utf8(written.lock().unwrap().clone()).unwrap();
         assert!(sent.contains("\"method\":\"initialize\""));
         assert!(sent.contains("\"method\":\"notifications/initialized\""));
+    }
+
+    #[test]
+    fn server_info_is_captured_from_the_initialize_response() {
+        let (client, _written) = client_with_canned_responses(&[
+            r#"{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"t0k3n-mcp","version":"1.2.3"}}}"#,
+        ]);
+        assert_eq!(client.server_info(), Some(("t0k3n-mcp", "1.2.3")));
+    }
+
+    #[test]
+    fn server_info_is_none_when_the_handshake_omits_it() {
+        let (client, _written) =
+            client_with_canned_responses(&[r#"{"jsonrpc":"2.0","id":1,"result":{}}"#]);
+        assert_eq!(client.server_info(), None);
     }
 
     #[test]
