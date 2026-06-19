@@ -236,7 +236,7 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 
 #### 4.7.4 並列実行
 - [x] 1タスクに対して複数のSub Agentを同時生成し、並列実行することを許可する（`Mediator::dispatch_many`、`std::thread::scope`で実行、`src/agent/mediator.rs`）
-- [ ] 並列実行されたSub Agent群の結果はMediatorが集約し、矛盾や重複がある場合はMediatorが解決する（結果の収集まではあるが、矛盾・重複の解決ロジックは未実装）
+- [x] 並列実行されたSub Agent群の結果はMediatorが集約し、矛盾や重複がある場合はMediatorが解決する（`Mediator::aggregate`/`dispatch_many_aggregated`、`src/agent/aggregate.rs`。同一description内で結果が完全一致するものは`AggregatedItem`に重複統合、不一致のものは`Conflict`として多数決（同数時はFailure優先）で解決しつつ全結果を保持）
 - [x] 並列実行数の上限設定（リソース消費・API利用制限を踏まえた上限値、設定可能とする）（`MediatorConfig::max_parallel_sub_agents`、デフォルト4、`with_config`で変更可能）
 - [x] 並列実行中の一部Sub Agentが失敗した場合のハンドリング（他のSub Agentの結果のみで進行するか、全体を再試行するかの方針）（方針：バッチ全体を中断せず、各タスクの結果を`Result`として個別に返す。`dispatch_many_continues_past_denied_and_failed_tasks`テストで確認）
 

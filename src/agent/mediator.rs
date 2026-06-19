@@ -1,4 +1,5 @@
-use super::{ConfirmationPrompt, SubAgent, Task, TaskExecutor, TaskResult};
+use super::aggregate::compute as compute_aggregate;
+use super::{AggregatedReport, ConfirmationPrompt, SubAgent, Task, TaskExecutor, TaskResult};
 use crate::permission::{
     AuditDecision, AuditEntry, AuditLogger, PermissionDecision, PermissionLevel, PermissionStore,
     classify_danger,
@@ -115,6 +116,30 @@ impl<'a> Mediator<'a> {
             .into_iter()
             .map(|r| r.expect("every task index is filled by either authorize or the scoped run"))
             .collect()
+    }
+
+    /// Collapses `dispatch_many`'s per-task results into a single report
+    /// (4.7.4): Sub Agents that ran the same task description and agreed
+    /// are deduplicated into one `AggregatedItem`; ones that disagreed are
+    /// surfaced as a `Conflict` with a majority-vote resolution instead of
+    /// having one result silently picked over the other.
+    pub fn aggregate(
+        &self,
+        tasks: &[Task],
+        results: &[Result<TaskResult, DispatchError>],
+    ) -> AggregatedReport {
+        compute_aggregate(tasks, results)
+    }
+
+    /// Convenience wrapper: runs `dispatch_many` then aggregates the result
+    /// in one call.
+    pub fn dispatch_many_aggregated(
+        &self,
+        tasks: &[Task],
+        executor: &(dyn TaskExecutor + Sync),
+    ) -> AggregatedReport {
+        let results = self.dispatch_many(tasks, executor);
+        self.aggregate(tasks, &results)
     }
 
     fn authorize(&self, task: &Task) -> Result<(), DispatchError> {
@@ -303,5 +328,26 @@ mod tests {
         assert!(results.iter().all(|r| r.is_ok()));
         assert!(executor.max_concurrent_seen.load(Ordering::SeqCst) <= 2);
         assert_eq!(executor.calls.load(Ordering::SeqCst), 6);
+    }
+
+    #[test]
+    fn dispatch_many_aggregated_deduplicates_agreeing_results() {
+        let store = FixedPermissionStore(PermissionLevel::GodMode);
+        let confirmation = FixedConfirmation(false, AtomicUsize::new(0));
+        let audit = NoOpAuditLogger;
+        let mediator = Mediator::new(&store, &confirmation, &audit);
+        let executor = CountingExecutor::new();
+
+        let tasks = vec![
+            Task::read_only("check disk space"),
+            Task::read_only("check disk space"),
+            Task::read_only("check disk space"),
+        ];
+
+        let report = mediator.dispatch_many_aggregated(&tasks, &executor);
+
+        assert_eq!(report.items.len(), 1);
+        assert_eq!(report.items[0].duplicate_count, 3);
+        assert!(report.conflicts.is_empty());
     }
 }

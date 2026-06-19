@@ -1,3 +1,4 @@
+mod aggregate;
 mod claude_executor;
 mod confirmation;
 mod executor;
@@ -7,6 +8,7 @@ mod sub_agent;
 mod task;
 mod tools;
 
+pub use aggregate::{AggregatedItem, AggregatedReport, Conflict};
 pub use claude_executor::ClaudeTaskExecutor;
 pub use confirmation::{CliConfirmationPrompt, ConfirmationPrompt};
 pub use executor::TaskExecutor;
