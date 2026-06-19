@@ -256,9 +256,9 @@ Mediatorは常駐かつユーザーと長時間対話し続けるため、Sub Ag
 - [ ] Ctx Agent自体の処理に失敗した場合のフェイルセーフ（要約失敗時にMediatorを強制終了させず、閾値到達前の状態を維持して再試行する等）
 
 #### 4.8 初回インストール時
-- [ ] 初めてユーザーが本ソフトをインストールするときは環境に合わせたps1・shスクリプトを実行する
-- [ ] スクリプトはPATHの追加や必要なフォルダの作成等を自動で行う
-- [ ] これらのスクリプト郡はGitHub Actionsによって作られたReleaseに同袍して公開される
+- [x] 初めてユーザーが本ソフトをインストールするときは環境に合わせたps1・shスクリプトを実行する（`scripts/install.ps1`（Windows）・`scripts/install.sh`（macOS/Linux）。リリースアーカイブ内で実行する前提のスタンドアロンスクリプト）
+- [x] スクリプトはPATHの追加や必要なフォルダの作成等を自動で行う（インストール先ディレクトリ・Core設定ディレクトリを作成し、未登録の場合のみユーザーPATH（Windowsはレジストリ経由の永続PATH、Unixはshell rcファイル）に追記。冪等性を確認済み）
+- [x] これらのスクリプト郡はGitHub Actionsによって作られたReleaseに同袍して公開される（`.github/workflows/release.yml`。`v*`タグ push時にWindows/macOS/Linux向けにビルドし、各バイナリと対応するインストールスクリプトをzip/tar.gzに同梱してGitHub Releaseへ添付）
 
 ---
 
