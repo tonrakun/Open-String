@@ -38,7 +38,8 @@ pub mod telegram;
 use crate::agent::{self, ClaudeTaskExecutor, ConfirmationPrompt, Mediator, MediatorTurn};
 use crate::llm::ClaudeClient;
 use crate::permission::{PermissionError, PermissionLevel, PermissionStore};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct IncomingMessage {
@@ -71,6 +72,12 @@ pub struct GatewayConfig {
     pub allowed_senders: Vec<String>,
     pub max_level: PermissionLevel,
     pub max_reply_chars: usize,
+    /// Maps a platform `chat_id` (Discord channel, Telegram chat, LINE
+    /// group/user) to the workspace its messages should run against,
+    /// letting one adapter process serve several workspaces at once. A
+    /// `chat_id` with no entry here falls back to the `workspace` passed
+    /// to `run` (4.4's multi-workspace routing extension).
+    pub routes: HashMap<String, PathBuf>,
 }
 
 impl Default for GatewayConfig {
@@ -79,8 +86,25 @@ impl Default for GatewayConfig {
             allowed_senders: Vec::new(),
             max_level: PermissionLevel::HighProtect,
             max_reply_chars: 1800,
+            routes: HashMap::new(),
         }
     }
+}
+
+/// Resolves which workspace a message's `chat_id` should run against: its
+/// routed override if one is configured, otherwise the adapter's default
+/// `workspace`. Pulled out as a pure function so the routing decision is
+/// unit-testable without standing up a real `WorkspaceRuntime` (which
+/// needs a stored API key and a permission store).
+fn resolve_target_workspace(
+    routes: &HashMap<String, PathBuf>,
+    chat_id: &str,
+    default: Option<&Path>,
+) -> Option<PathBuf> {
+    routes
+        .get(chat_id)
+        .cloned()
+        .or_else(|| default.map(Path::to_path_buf))
 }
 
 /// 6.3's "チャットゲートウェイの公開設定デフォルトを「許可リスト制」とす
@@ -169,37 +193,76 @@ impl PermissionStore for ClampedPermissionStore {
     }
 }
 
+/// The per-workspace pieces a gateway run needs to handle a message:
+/// the Claude client, the (already gateway-clamped) permission level, and
+/// the executor wired up with that workspace's Extensions/SKILLS. Built
+/// once per distinct target workspace and cached in `run`'s loop, since
+/// `routes` can point different `chat_id`s at different workspaces within
+/// the same adapter process.
+struct WorkspaceRuntime {
+    client: ClaudeClient,
+    level: PermissionLevel,
+    extensions: Vec<agent::ExtensionInfo>,
+    skills: Vec<crate::skills::Skill>,
+    mcp_tools: Vec<agent::McpToolSource>,
+}
+
+impl WorkspaceRuntime {
+    fn build(workspace: Option<&Path>, config: &GatewayConfig) -> Result<Self, String> {
+        let provider = crate::auth::AnthropicApiKeyProvider::for_workspace(workspace);
+        let client = crate::claude_client_from_stored_key(&provider)?;
+        let configured_level = crate::permission_store_for(workspace)?
+            .load()
+            .map_err(|e| format!("failed to read permission level: {e}"))?;
+        let level = effective_level(configured_level, config);
+        let extensions = agent::load_connected_extensions(workspace);
+        let skills = crate::skills::load_skills(workspace);
+        let mcp_tools = agent::connect_workspace_tools(workspace, level);
+        Ok(Self {
+            client,
+            level,
+            extensions,
+            skills,
+            mcp_tools,
+        })
+    }
+
+    /// Builds an executor borrowing this runtime's cached client/Extension
+    /// connections. Cheap to call per message: `mcp_tools`' actual
+    /// connections are `Arc<Mutex<McpClient>>` handles cloned by reference
+    /// count, not reconnected.
+    fn executor(&self) -> ClaudeTaskExecutor<'_> {
+        ClaudeTaskExecutor::new(&self.client)
+            .with_extensions(self.extensions.clone())
+            .with_skills(self.skills.clone())
+            .with_mcp_tools(self.mcp_tools.clone())
+    }
+}
+
 /// Runs `gateway` until it returns a fatal error: polls for incoming
 /// messages, drops anything from a sender not on `config.allowed_senders`,
 /// and otherwise runs the message through the same Mediator pipeline
 /// `chat` uses (minus persistent history -- each chat-gateway message is
 /// handled as its own self-contained turn) before compressing and sending
-/// the reply back.
+/// the reply back. `config.routes` can send different `chat_id`s to
+/// different workspaces; each target workspace's `WorkspaceRuntime` is
+/// built lazily on first use and cached for the rest of the run.
 pub fn run<G: ChatGateway>(
     mut gateway: G,
     workspace: Option<&Path>,
     config: GatewayConfig,
 ) -> Result<(), String> {
-    let provider = crate::auth::AnthropicApiKeyProvider::for_workspace(workspace);
-    let client = crate::claude_client_from_stored_key(&provider)?;
-    let configured_level = crate::permission_store_for(workspace)?
-        .load()
-        .map_err(|e| format!("failed to read permission level: {e}"))?;
-    let level = effective_level(configured_level, &config);
     let audit_logger = crate::permission::FileAuditLogger::new()
         .map_err(|e| format!("failed to open audit log: {e}"))?;
     let confirmation = DeclineConfirmationPrompt;
-    let clamped_store = ClampedPermissionStore(level);
-    let mut mediator = Mediator::new(&clamped_store, &confirmation, &audit_logger);
-    let executor = ClaudeTaskExecutor::new(&client)
-        .with_extensions(agent::load_connected_extensions(workspace))
-        .with_skills(crate::skills::load_skills(workspace))
-        .with_mcp_tools(agent::connect_workspace_tools(workspace, level));
+    let mut runtimes: HashMap<Option<PathBuf>, WorkspaceRuntime> = HashMap::new();
 
     println!(
-        "{} gateway running ({} allow-listed sender(s), max level: {level})",
+        "{} gateway running ({} allow-listed sender(s), {} route(s), max level: {})",
         gateway.platform(),
-        config.allowed_senders.len()
+        config.allowed_senders.len(),
+        config.routes.len(),
+        config.max_level
     );
     loop {
         let messages = gateway.poll_incoming().map_err(|e| e.to_string())?;
@@ -212,7 +275,27 @@ pub fn run<G: ChatGateway>(
                 );
                 continue;
             }
-            let reply = handle_message(&client, &mut mediator, &executor, &msg.text);
+            let target = resolve_target_workspace(&config.routes, &msg.chat_id, workspace);
+            let runtime = match runtimes.entry(target.clone()) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    match WorkspaceRuntime::build(target.as_deref(), &config) {
+                        Ok(runtime) => e.insert(runtime),
+                        Err(err) => {
+                            eprintln!(
+                                "{}: failed to prepare workspace runtime for chat {}: {err}",
+                                gateway.platform(),
+                                msg.chat_id
+                            );
+                            continue;
+                        }
+                    }
+                }
+            };
+            let clamped_store = ClampedPermissionStore(runtime.level);
+            let mut mediator = Mediator::new(&clamped_store, &confirmation, &audit_logger);
+            let executor = runtime.executor();
+            let reply = handle_message(&runtime.client, &mut mediator, &executor, &msg.text);
             let reply = compress_for_chat(&reply, config.max_reply_chars);
             if let Err(e) = gateway.send(&msg.chat_id, &reply) {
                 eprintln!("{}: failed to send reply: {e}", gateway.platform());
@@ -285,6 +368,34 @@ mod tests {
             effective_level(PermissionLevel::HighProtect, &config),
             PermissionLevel::HighProtect
         );
+    }
+
+    #[test]
+    fn resolve_target_workspace_uses_the_route_when_one_matches() {
+        let mut routes = HashMap::new();
+        routes.insert("channel-a".to_string(), PathBuf::from("/workspaces/a"));
+        let default = Path::new("/workspaces/default");
+        assert_eq!(
+            resolve_target_workspace(&routes, "channel-a", Some(default)),
+            Some(PathBuf::from("/workspaces/a"))
+        );
+    }
+
+    #[test]
+    fn resolve_target_workspace_falls_back_to_the_default_when_unrouted() {
+        let mut routes = HashMap::new();
+        routes.insert("channel-a".to_string(), PathBuf::from("/workspaces/a"));
+        let default = Path::new("/workspaces/default");
+        assert_eq!(
+            resolve_target_workspace(&routes, "channel-b", Some(default)),
+            Some(PathBuf::from("/workspaces/default"))
+        );
+    }
+
+    #[test]
+    fn resolve_target_workspace_is_none_when_unrouted_and_no_default() {
+        let routes = HashMap::new();
+        assert_eq!(resolve_target_workspace(&routes, "channel-a", None), None);
     }
 
     #[test]

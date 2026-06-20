@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 /// this same generic "call whatever tool a connected, permission-compatible
 /// server advertises" mechanism, since Open String has no special-cased
 /// knowledge of any one server's tool names.
+#[derive(Clone)]
 pub struct McpToolSource {
     pub definition: ToolDefinition,
     pub client: Arc<Mutex<McpClient>>,

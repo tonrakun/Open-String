@@ -463,6 +463,11 @@ enum GatewayAction {
         max_level: Option<PermissionLevel>,
         #[arg(long)]
         workspace: Option<PathBuf>,
+        /// Routes a channel's messages to a different workspace than
+        /// `--workspace`, as `<channel-id>=<path>`. Repeatable; a channel
+        /// with no matching `--route` falls back to `--workspace`
+        #[arg(long, value_parser = parse_route)]
+        route: Vec<(String, PathBuf)>,
     },
     /// Run the Telegram adapter: long-polls for updates and bridges
     /// allow-listed users' messages to the Mediator
@@ -473,6 +478,10 @@ enum GatewayAction {
         max_level: Option<PermissionLevel>,
         #[arg(long)]
         workspace: Option<PathBuf>,
+        /// Routes a chat's messages to a different workspace than
+        /// `--workspace`, as `<chat-id>=<path>`. Repeatable
+        #[arg(long, value_parser = parse_route)]
+        route: Vec<(String, PathBuf)>,
     },
     /// Run the LINE adapter: hosts a webhook receiver and bridges
     /// allow-listed users'/groups' messages to the Mediator
@@ -488,7 +497,24 @@ enum GatewayAction {
         max_level: Option<PermissionLevel>,
         #[arg(long)]
         workspace: Option<PathBuf>,
+        /// Routes a group/user's messages to a different workspace than
+        /// `--workspace`, as `<group-or-user-id>=<path>`. Repeatable
+        #[arg(long, value_parser = parse_route)]
+        route: Vec<(String, PathBuf)>,
     },
+}
+
+/// Parses one `--route <chat_id>=<path>` value at the first `=`. Neither
+/// side may be empty, since an empty `chat_id` could never match a real
+/// message and an empty path is never a meaningful workspace override.
+fn parse_route(s: &str) -> Result<(String, PathBuf), String> {
+    let (chat_id, path) = s
+        .split_once('=')
+        .ok_or_else(|| format!("expected `<chat_id>=<path>`, got \"{s}\""))?;
+    if chat_id.is_empty() || path.is_empty() {
+        return Err(format!("expected `<chat_id>=<path>`, got \"{s}\""));
+    }
+    Ok((chat_id.to_string(), PathBuf::from(path)))
 }
 
 fn main() {
@@ -817,6 +843,7 @@ fn gateway_dispatch(action: GatewayAction) -> Result<(), String> {
             allow,
             max_level,
             workspace,
+            route,
         } => {
             let token = require_gateway_token(GatewayPlatform::Discord)?;
             let gateway = gateway::discord::DiscordGateway::connect(token)
@@ -824,20 +851,21 @@ fn gateway_dispatch(action: GatewayAction) -> Result<(), String> {
             gateway::run(
                 gateway,
                 resolve_workspace(workspace).as_deref(),
-                gateway_config(allow, max_level),
+                gateway_config(allow, max_level, route),
             )
         }
         GatewayAction::Telegram {
             allow,
             max_level,
             workspace,
+            route,
         } => {
             let token = require_gateway_token(GatewayPlatform::Telegram)?;
             let gateway = gateway::telegram::TelegramGateway::new(&token);
             gateway::run(
                 gateway,
                 resolve_workspace(workspace).as_deref(),
-                gateway_config(allow, max_level),
+                gateway_config(allow, max_level, route),
             )
         }
         GatewayAction::Line {
@@ -845,6 +873,7 @@ fn gateway_dispatch(action: GatewayAction) -> Result<(), String> {
             allow,
             max_level,
             workspace,
+            route,
         } => {
             let token = require_gateway_token(GatewayPlatform::Line)?;
             let channel_secret = gateway::GatewayTokenStore::for_platform("line-channel-secret")
@@ -858,7 +887,7 @@ fn gateway_dispatch(action: GatewayAction) -> Result<(), String> {
             gateway::run(
                 gateway,
                 resolve_workspace(workspace).as_deref(),
-                gateway_config(allow, max_level),
+                gateway_config(allow, max_level, route),
             )
         }
     }
@@ -879,10 +908,12 @@ fn require_gateway_token(platform: GatewayPlatform) -> Result<String, String> {
 fn gateway_config(
     allow: Vec<String>,
     max_level: Option<PermissionLevel>,
+    route: Vec<(String, PathBuf)>,
 ) -> gateway::GatewayConfig {
     gateway::GatewayConfig {
         allowed_senders: allow,
         max_level: max_level.unwrap_or(PermissionLevel::HighProtect),
+        routes: route.into_iter().collect(),
         ..gateway::GatewayConfig::default()
     }
 }

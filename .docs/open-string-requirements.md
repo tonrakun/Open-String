@@ -189,6 +189,7 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 - [x] チャット経由の指示に対する権限レベル適用（チャットからの操作は既定でより厳しい権限レベルを強制するか要検討）（`gateway::effective_level`が既定`high-protect`にクランプし、Core本体の設定がより緩くてもチャット経由では昇格させない。確認要求は`DeclineConfirmationPrompt`で常に拒否)
 - [x] グループチャットでの誤操作防止（OpenClawで指摘された「open設定での第三者操作」リスクへの対策）（`GatewayConfig::allowed_senders`は既定で空(誰も許可しない)。`gateway <platform> --allow <id>`で明示的に許可された送信者のみMediatorに到達する)
 - [x] チャット応答の長文圧縮（トークン消費を抑えた返信生成）（`gateway::compress_for_chat`が送信前に文字数上限で切り詰め、切り詰められたことを明示する)
+- [x] chat_id（Discordチャンネル/Telegramチャット/LINEグループ・ユーザー）単位のマルチワークスペース振り分け（`GatewayConfig::routes`、`open-string gateway discord/telegram/line --route <chat_id>=<path>`を複数指定可能。`run`が`chat_id`ごとに`WorkspaceRuntime`（クライアント・権限レベル・Extension接続）を遅延構築してキャッシュし、未マッチの`chat_id`は`--workspace`にフォールバックする。1プロセスで複数ワークスペースに同時対応可能）
 
 ### 4.5 セッション・ワークスペース管理
 

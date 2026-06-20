@@ -29,12 +29,14 @@ pub use ctx_agent::{
 };
 pub use executor::TaskExecutor;
 pub use mcp_memory::connect_for_state_management;
-pub use mcp_tools::connect_workspace_tools;
+pub use mcp_tools::{McpToolSource, connect_workspace_tools};
 pub use mediator::{DispatchError, Mediator, MediatorConfig};
 pub use progress::{FileProgressMemoStore, ProgressMemoStore};
 pub use respond::{natural_language_response, render_report};
 pub use result::{TaskOutcome, TaskResult};
 pub use scope::TaskScope;
 pub use sub_agent::SubAgent;
-pub use system_prompt::{SystemPromptBuilder, load_connected_extensions, register_extension};
+pub use system_prompt::{
+    ExtensionInfo, SystemPromptBuilder, load_connected_extensions, register_extension,
+};
 pub use task::Task;

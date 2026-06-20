@@ -100,7 +100,7 @@ open-string gui   # ローカルWeb GUI（既定ブラウザで開く）
 | `chat` | Mediatorとの自然言語対話ループ（`--resume <session-id>`でセッション復元） |
 | `health [--watch] [--interval-secs N] [--log-file PATH]` | 起動時/任意実行のセルフヘルスチェック（`--watch`で定期実行ループ） |
 | `tui` / `gui` | ターミナルUI / ローカルWeb GUIの起動 |
-| `gateway set-token / discord / telegram / line` | チャットゲートウェイのトークン登録とBot起動 |
+| `gateway set-token / discord / telegram / line [--route <chat_id>=<path>]` | チャットゲートウェイのトークン登録とBot起動（`--route`でチャンネル/チャット/グループ単位に異なるワークスペースへ振り分け可能、複数指定可） |
 | `update [--check] [--yes]` | GitHub Releasesの最新バージョン確認・実行中バイナリの自己更新 |
 | `audit export [--format text\|json] [--out PATH] [--include-rotated]` | 監査ログ（操作許可・拒否の記録）のエクスポート |
 
