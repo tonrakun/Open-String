@@ -43,6 +43,15 @@ pub fn progress_path_for(workspace: Option<&Path>) -> Result<PathBuf, String> {
     }
 }
 
+/// Resolves the hot-reload log file path a `FileHotReloadLog` (5.5) should
+/// use, with the same workspace-scoped/global split as `memory_dir_for`.
+pub fn hotreload_log_path_for(workspace: Option<&Path>) -> Result<PathBuf, String> {
+    match workspace {
+        Some(path) => Ok(workspace_state_dir(path).join("hotreload.json")),
+        None => global_state_dir().map(|dir| dir.join("hotreload.json")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,6 +66,10 @@ mod tests {
         assert_eq!(
             progress_path_for(Some(&workspace)).unwrap(),
             workspace.join(".open-string").join("progress.md")
+        );
+        assert_eq!(
+            hotreload_log_path_for(Some(&workspace)).unwrap(),
+            workspace.join(".open-string").join("hotreload.json")
         );
     }
 

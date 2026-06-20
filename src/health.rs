@@ -1,5 +1,7 @@
+use crate::hotreload::{FileHotReloadLog, HotReloadLog};
 use crate::mcp;
 use crate::permission::PermissionLevel;
+use crate::session;
 use std::path::Path;
 
 /// 4.6's "エラー検知時の自動分類（致命的/警告/情報）". `Fatal` is reserved
@@ -48,9 +50,65 @@ pub fn run_health_check(workspace: Option<&Path>, level: PermissionLevel) -> Hea
     let mut items = vec![
         check_binary_integrity(),
         check_config_integrity(workspace, level),
+        check_hot_reload(workspace),
     ];
     items.extend(check_extension_connectivity(workspace));
     HealthReport { items }
+}
+
+/// 5.5's "ホットリロード処理自体もセルフヘルスチェック層の監視対象に含める":
+/// surfaces the most recent reload attempt recorded by `ConfigWatcher`/
+/// `FileHotReloadLog` (driven from `main::chat`'s REPL loop). No recorded
+/// activity is not a problem -- a session that never had a config change
+/// to react to has nothing to report -- so it's `Info`, not `Warning`.
+fn check_hot_reload(workspace: Option<&Path>) -> HealthCheckItem {
+    let path = match session::hotreload_log_path_for(workspace) {
+        Ok(path) => path,
+        Err(e) => {
+            return HealthCheckItem {
+                name: "hot_reload".to_string(),
+                severity: Severity::Warning,
+                message: format!("could not resolve the hot reload log path: {e}"),
+                repaired: false,
+            };
+        }
+    };
+
+    match FileHotReloadLog::at(path).recent(1) {
+        Ok(events) if events.is_empty() => HealthCheckItem {
+            name: "hot_reload".to_string(),
+            severity: Severity::Info,
+            message: "no hot reload activity recorded yet".to_string(),
+            repaired: false,
+        },
+        Ok(events) => {
+            let last = events.last().expect("checked non-empty above");
+            if last.success {
+                HealthCheckItem {
+                    name: "hot_reload".to_string(),
+                    severity: Severity::Info,
+                    message: format!("last reload of \"{}\" succeeded", last.source),
+                    repaired: false,
+                }
+            } else {
+                HealthCheckItem {
+                    name: "hot_reload".to_string(),
+                    severity: Severity::Warning,
+                    message: format!(
+                        "last reload of \"{}\" failed and fell back to the previous config: {}",
+                        last.source, last.message
+                    ),
+                    repaired: false,
+                }
+            }
+        }
+        Err(e) => HealthCheckItem {
+            name: "hot_reload".to_string(),
+            severity: Severity::Warning,
+            message: format!("failed to read the hot reload log: {e}"),
+            repaired: false,
+        },
+    }
 }
 
 fn check_binary_integrity() -> HealthCheckItem {
@@ -279,6 +337,32 @@ mod tests {
     fn extension_connectivity_is_empty_when_no_servers_are_configured() {
         let workspace = temp_workspace();
         assert!(check_extension_connectivity(Some(&workspace)).is_empty());
+        std::fs::remove_dir_all(&workspace).ok();
+    }
+
+    #[test]
+    fn hot_reload_check_is_info_when_nothing_has_been_recorded() {
+        let workspace = temp_workspace();
+        let item = check_hot_reload(Some(&workspace));
+        assert_eq!(item.severity, Severity::Info);
+        std::fs::remove_dir_all(&workspace).ok();
+    }
+
+    #[test]
+    fn hot_reload_check_warns_after_a_failed_reload() {
+        let workspace = temp_workspace();
+        let log_path = session::hotreload_log_path_for(Some(&workspace)).unwrap();
+        FileHotReloadLog::at(log_path)
+            .record(crate::hotreload::ReloadEvent::now(
+                "mcp config",
+                false,
+                "parse error",
+            ))
+            .unwrap();
+
+        let item = check_hot_reload(Some(&workspace));
+        assert_eq!(item.severity, Severity::Warning);
+        assert!(item.message.contains("parse error"));
         std::fs::remove_dir_all(&workspace).ok();
     }
 

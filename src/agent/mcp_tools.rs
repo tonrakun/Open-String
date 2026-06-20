@@ -15,6 +15,12 @@ use std::sync::{Arc, Mutex};
 pub struct McpToolSource {
     pub definition: ToolDefinition,
     pub client: Arc<Mutex<McpClient>>,
+    /// Whether this tool comes from the bundled, officially verified
+    /// Extension (`mcp::bundled::is_trusted_extension_name`) rather than a
+    /// third-party server. Untrusted sources are sandboxed (5.3): excluded
+    /// from read-only tasks entirely, and gated per-call by permission
+    /// level otherwise (`ClaudeTaskExecutor::execute_tool`).
+    pub trusted: bool,
 }
 
 /// Connects to every enabled, permission-compatible `.mcp.json` server for
@@ -52,6 +58,7 @@ pub fn connect_workspace_tools(
             }
         };
         let client = Arc::new(Mutex::new(client));
+        let trusted = mcp::is_trusted_extension_name(name);
         for tool in tools {
             sources.push(McpToolSource {
                 definition: ToolDefinition {
@@ -60,6 +67,7 @@ pub fn connect_workspace_tools(
                     input_schema: tool.input_schema,
                 },
                 client: client.clone(),
+                trusted,
             });
         }
     }

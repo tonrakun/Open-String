@@ -42,6 +42,14 @@ pub fn is_available() -> bool {
     installed_binary_path().is_some() || on_path("t0k3n")
 }
 
+/// Whether `name` refers to a bundled/officially verified Extension rather
+/// than a third-party one. Backs both 5.3's per-call sandboxing (only
+/// non-bundled tool calls go through the extra permission gate) and 5.4's
+/// "信頼できないソース" warning shown before a new Extension is connected.
+pub fn is_trusted_extension_name(name: &str) -> bool {
+    name == T0K3N_EXTENSION_NAME
+}
+
 /// The command Open String should launch t0k3n-mcp with: its known
 /// install path when found there, otherwise the bare name resolved
 /// through `PATH`.
@@ -79,6 +87,12 @@ mod tests {
         if installed_binary_path().is_none() && !on_path("t0k3n") {
             assert_eq!(resolve_command(), "t0k3n");
         }
+    }
+
+    #[test]
+    fn trusts_only_the_bundled_extension_name() {
+        assert!(is_trusted_extension_name(T0K3N_EXTENSION_NAME));
+        assert!(!is_trusted_extension_name("some-third-party-server"));
     }
 
     #[test]

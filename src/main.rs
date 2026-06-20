@@ -1,6 +1,7 @@
 mod agent;
 mod auth;
 mod health;
+mod hotreload;
 mod llm;
 mod mcp;
 mod permission;
@@ -17,6 +18,7 @@ use agent::{
 };
 use auth::{AnthropicApiKeyProvider, AuthProvider, validate_api_key_format};
 use clap::{Parser, Subcommand};
+use hotreload::{FileHotReloadLog, HotReloadLog, ReloadEvent};
 use llm::{ClaudeClient, Message};
 use permission::{
     AuditDecision, AuditEntry, AuditLogger, FileAuditLogger, FilePermissionStore,
@@ -1109,6 +1111,58 @@ struct ChatOptions {
     resume: Option<u64>,
 }
 
+/// Builds the Sub Agent executor for a `chat` session: connected
+/// Extensions plus the MCP tools they advertise, both re-derived from
+/// `.mcp.json` and the active permission level. Factored out so the
+/// initial build and every hot reload (5.5) construct it identically.
+fn build_chat_executor<'a>(
+    client: &'a ClaudeClient,
+    workspace: Option<&std::path::Path>,
+    level: PermissionLevel,
+) -> ClaudeTaskExecutor<'a> {
+    ClaudeTaskExecutor::new(client)
+        .with_extensions(agent::load_connected_extensions(workspace))
+        .with_mcp_tools(agent::connect_workspace_tools(workspace, level))
+}
+
+/// 5.5's hot reload: re-reads the permission level and `.mcp.json`-backed
+/// executor from disk and records the attempt to `log`. Returns `None`
+/// (keeping the caller's existing state untouched -- the "直前の正常な設
+/// 定を保持して復元" fallback) when either read fails, e.g. because a
+/// concurrent edit left `.mcp.json` briefly malformed.
+fn reload_chat_runtime<'a>(
+    client: &'a ClaudeClient,
+    store: &dyn PermissionStore,
+    workspace: Option<&std::path::Path>,
+    log: &dyn HotReloadLog,
+) -> Option<(PermissionLevel, ClaudeTaskExecutor<'a>)> {
+    let level = match store.load() {
+        Ok(level) => level,
+        Err(e) => {
+            let _ = log.record(ReloadEvent::now(
+                "permission level",
+                false,
+                format!("failed to reload: {e}"),
+            ));
+            return None;
+        }
+    };
+    if let Err(e) = mcp::load(workspace) {
+        let _ = log.record(ReloadEvent::now(
+            "mcp config",
+            false,
+            format!("failed to reload: {e}"),
+        ));
+        return None;
+    }
+    let _ = log.record(ReloadEvent::now(
+        "chat runtime",
+        true,
+        "reloaded permission level and mcp config",
+    ));
+    Some((level, build_chat_executor(client, workspace, level)))
+}
+
 fn chat(
     store: &dyn PermissionStore,
     audit_logger: &dyn AuditLogger,
@@ -1124,7 +1178,7 @@ fn chat(
             max_parallel_sub_agents,
         });
     }
-    let permission_level = store
+    let mut permission_level = store
         .load()
         .map_err(|e| format!("failed to read permission level: {e}"))?;
 
@@ -1140,9 +1194,17 @@ fn chat(
         print_health_report(&health_report);
     }
 
-    let executor = ClaudeTaskExecutor::new(&client)
-        .with_extensions(agent::load_connected_extensions(workspace))
-        .with_mcp_tools(agent::connect_workspace_tools(workspace, permission_level));
+    let mut executor = build_chat_executor(&client, workspace, permission_level);
+    let hotreload_log = FileHotReloadLog::at(session::hotreload_log_path_for(workspace)?);
+    // 5.5: watches `.mcp.json` for filesystem changes so an edit made
+    // outside this process (or by another tool) is picked up without a
+    // restart, not just the in-process `propose_extension` path below. A
+    // watcher that fails to start (e.g. an unsupported platform backend)
+    // only disables that filesystem-event path for this session -- the
+    // immediate post-`propose_extension` reload still works regardless.
+    let config_watcher = hotreload::ConfigWatcher::watch(&[mcp::config_path(workspace)])
+        .inspect_err(|e| eprintln!("warning: hot reload file watcher unavailable: {e}"))
+        .ok();
     let mut history: Vec<Message> = Vec::new();
     let mut ctx_config = CtxAgentConfig::default();
     if let Some(pct) = options.ctx_trigger_threshold_pct {
@@ -1216,6 +1278,21 @@ fn chat(
 
     println!("Open String chat. Type a request, or \"exit\"/\"quit\" to leave.");
     loop {
+        // 5.5's hot reload: checked once per turn, never mid-turn, so a
+        // Sub Agent/Ctx Agent already running this turn always finishes
+        // against whatever config it started with -- only the *next* turn
+        // sees a config change.
+        if config_watcher
+            .as_ref()
+            .is_some_and(hotreload::ConfigWatcher::poll_changed)
+            && let Some((new_level, new_executor)) =
+                reload_chat_runtime(&client, store, workspace, &hotreload_log)
+        {
+            permission_level = new_level;
+            executor = new_executor;
+            println!("(config change detected; permission level and Extensions reloaded)");
+        }
+
         print!("> ");
         std::io::stdout().flush().map_err(|e| e.to_string())?;
 
@@ -1283,6 +1360,11 @@ fn chat(
                     proposal.name, proposal.command, proposal.reason
                 );
                 let danger = classify_danger(&operation);
+                // 5.4's link to 5.5: a successful connection here must be
+                // usable within this same chat session, not only after a
+                // restart, so each branch that actually applies the
+                // proposal immediately reloads the executor afterward
+                // rather than waiting for the next filesystem-watcher tick.
                 let reply = match permission_level.decide(&danger, false) {
                     PermissionDecision::AutoAllow => {
                         log_audit(
@@ -1291,11 +1373,19 @@ fn chat(
                             &operation,
                             AuditDecision::Allowed,
                         );
-                        apply_proposed_extension(workspace, &proposal)
+                        let reply = apply_proposed_extension(workspace, &proposal);
+                        if let Some((new_level, new_executor)) =
+                            reload_chat_runtime(&client, store, workspace, &hotreload_log)
+                        {
+                            permission_level = new_level;
+                            executor = new_executor;
+                        }
+                        reply
                     }
                     PermissionDecision::RequireConfirmation => {
                         let summary = format!(
-                            "Connect new Extension \"{}\"?\n  command: {} {}\n  reason: {}",
+                            "{}Connect new Extension \"{}\"?\n  command: {} {}\n  reason: {}",
+                            untrusted_source_warning(&proposal.name),
                             proposal.name,
                             proposal.command,
                             proposal.args.join(" "),
@@ -1308,7 +1398,14 @@ fn chat(
                                 &operation,
                                 AuditDecision::ConfirmedByUser,
                             );
-                            apply_proposed_extension(workspace, &proposal)
+                            let reply = apply_proposed_extension(workspace, &proposal);
+                            if let Some((new_level, new_executor)) =
+                                reload_chat_runtime(&client, store, workspace, &hotreload_log)
+                            {
+                                permission_level = new_level;
+                                executor = new_executor;
+                            }
+                            reply
                         } else {
                             log_audit(
                                 audit_logger,
@@ -1385,6 +1482,23 @@ fn chat(
 /// (4.2.1) rather than only after a separate manual registration, an
 /// `extensions.json` manifest entry with no published instructions (it
 /// falls back to the generic "prefer its tools" guide).
+///
+/// 5.4's "信頼できないソース" warning: anything other than the bundled
+/// Extension name (`mcp::is_trusted_extension_name`) is, by definition,
+/// a source Open String has no independent way to vouch for -- the user
+/// is shown this before being asked to confirm the connection, and it is
+/// echoed back in the result either way (even under `AutoAllow`, e.g.
+/// god mode, where there is no confirmation prompt to attach it to).
+fn untrusted_source_warning(name: &str) -> String {
+    if mcp::is_trusted_extension_name(name) {
+        String::new()
+    } else {
+        format!(
+            "\u{26a0} \"{name}\" is not a bundled/verified Extension source; only proceed if you trust where this command comes from.\n"
+        )
+    }
+}
+
 fn apply_proposed_extension(
     workspace: Option<&std::path::Path>,
     proposal: &ProposedExtension,
@@ -1431,7 +1545,11 @@ fn apply_proposed_extension(
             proposal.name
         );
     }
-    format!("Connected Extension \"{}\".{warning}", proposal.name)
+    format!(
+        "{}Connected Extension \"{}\".{warning}",
+        untrusted_source_warning(&proposal.name),
+        proposal.name
+    )
 }
 
 fn outcome_label(outcome: TaskOutcome) -> &'static str {
@@ -1483,5 +1601,16 @@ fn log_audit(
     };
     if let Err(e) = audit_logger.record(&entry) {
         eprintln!("warning: failed to record audit log entry: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn untrusted_source_warning_flags_anything_but_the_bundled_extension() {
+        assert!(untrusted_source_warning("some-third-party-server").contains("not a bundled"));
+        assert_eq!(untrusted_source_warning(mcp::T0K3N_EXTENSION_NAME), "");
     }
 }

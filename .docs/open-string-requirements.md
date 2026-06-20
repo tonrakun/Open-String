@@ -280,23 +280,23 @@ Mediatorは常駐かつユーザーと長時間対話し続けるため、Sub Ag
 ### 5.3 サードパーティExtension
 - [x] 外部MCPサーバーの追加・削除UI（CLIの`extension add`/`extension remove`、および5.4のMediator経由の自然言語導入フローの双方から実行可能）
 - [x] 互換性検証（Extension側のプロトコルバージョンチェック）（`McpClient`が`initialize`応答の`protocolVersion`を記録し、`is_protocol_compatible`でCore側の要求バージョンと比較。`health::run_health_check`は不一致をFatalではなくWarningとして扱い、Core本体の動作は継続。`extension check`/Mediator導入フローでも同じ判定を再利用）
-- [ ] サードパーティExtensionのサンドボックス化検討（権限レベルとの統合）
+- [x] サードパーティExtensionのサンドボックス化検討（権限レベルとの統合）（`McpToolSource.trusted`（bundled t0k3n以外はfalse）を導入し、`ClaudeTaskExecutor`がread-onlyタスクでは未信頼ツールを一切提示せず、それ以外のタスクでも呼び出し毎に`classify_danger`+`PermissionLevel::decide`を通し、`AutoAllow`以外は使い捨てSub Agentが確認を取れないため呼び出し自体を拒否）
 
 ### 5.4 Mediator主導によるExtension動的導入（新規要件）
 - [x] ユーザーがMediatorに対し自然言語で「○○のMCPサーバーを使いたい」等を依頼した場合、Mediatorがその場でMCP設定（`.mcp.json`相当）を書き換えて導入できる仕組みを実装する（`propose_extension`ツールを介して`MediatorTurn::ProposeExtension`を返し、`chat`ループが`apply_proposed_extension`で`.mcp.json`に追記）
 - [x] Mediatorによる設定ファイルの自己編集自体を「危険操作」の一種として権限レベル管理の対象に含める（4.1と連携。例：`middle permission`以上を要求等）（`permission::danger`の`ConfigEdit`分類を流用し、`PermissionLevel::decide`の`RequireConfirmation`判定に通す）
 - [x] 導入対象のMCPサーバー情報（名称・接続先URL/コマンド・要求する権限スコープ）をユーザーに提示し、確認を得た上で設定変更を実行するフロー（無断導入を防止）（`ConfirmationPrompt::confirm`に名称・コマンド・引数・理由を含むサマリーを提示し、拒否時は`.mcp.json`を書き換えずに終了）
-- [ ] 導入後、5.5のホットリロード機構と連携し、Core再起動なしで即座に利用可能にする
-- [ ] 導入したMCPサーバーが信頼できないソース（未知の接続先等）である場合の警告表示
+- [x] 導入後、5.5のホットリロード機構と連携し、Core再起動なしで即座に利用可能にする（`apply_proposed_extension`成功直後に`reload_chat_runtime`を呼び、同じ`chat`セッション内で`executor`/権限レベルを再構築）
+- [x] 導入したMCPサーバーが信頼できないソース（未知の接続先等）である場合の警告表示（`untrusted_source_warning`：bundled t0k3n以外の名称は確認サマリーと結果メッセージの両方に警告を付与、`AutoAllow`経路でも表示）
 - [x] 導入失敗時（接続不能・認証エラー等）のロールバック（設定ファイルを導入前の状態に復元）（`apply_proposed_extension`が追加直後に`McpClient::connect`で接続確認し、失敗時は`extension_remove`で`.mcp.json`を導入前の状態に戻す）
 
 ### 5.5 Extension/エージェント動作コンフィグのホットリロード（新規要件）
-- [ ] MCPサーバー・SKILLSの追加・削除・設定変更をCore再起動なしで即時反映する仕組みを実装する
-- [ ] Mediator/Sub Agent/Ctx Agentの動作に関わるコンフィグ（権限レベル設定、コンテキスト圧縮の閾値、システムプロンプト断片等）についても同様にホットリロード対応とする
-- [ ] ホットリロード発生時、実行中のSub Agent/Ctx Agentには影響を与えない（実行中タスクは旧設定のまま完走させ、次回生成以降から新設定を適用する）
-- [ ] 設定ファイルの変更監視（ファイルシステムイベント検知）と、不正/破損した設定が読み込まれた場合のフォールバック（直前の正常な設定を保持して復元）
-- [ ] ホットリロードの成功/失敗をTUI/GUIダッシュボードに通知（4.3と連携）
-- [ ] ホットリロード処理自体もセルフヘルスチェック層の監視対象に含める（4.6と連携）
+- [ ] MCPサーバー・SKILLSの追加・削除・設定変更をCore再起動なしで即時反映する仕組みを実装する（`.mcp.json`/Extension/権限レベルは`hotreload::ConfigWatcher`+`reload_chat_runtime`で対応済み。SKILLSは`chat`ループにまだ組み込まれておらず未対応 -- 別途SKILLS統合タスクで対応）
+- [ ] Mediator/Sub Agent/Ctx Agentの動作に関わるコンフィグ（権限レベル設定、コンテキスト圧縮の閾値、システムプロンプト断片等）についても同様にホットリロード対応とする（権限レベルとExtension由来のシステムプロンプト断片は対応済み。コンテキスト圧縮閾値（`CtxAgentConfig`）はCLIオプションのみで永続設定ファイルが無く、ホットリロード対象として未対応）
+- [x] ホットリロード発生時、実行中のSub Agent/Ctx Agentには影響を与えない（実行中タスクは旧設定のまま完走させ、次回生成以降から新設定を適用する）（`chat`のメインループの先頭、ターン境界でのみ`reload_chat_runtime`を呼ぶため、実行中のディスパッチには影響しない）
+- [x] 設定ファイルの変更監視（ファイルシステムイベント検知）と、不正/破損した設定が読み込まれた場合のフォールバック（直前の正常な設定を保持して復元）（`hotreload::ConfigWatcher`が`notify`でファイル変更を検知。`reload_chat_runtime`は`mcp::load`/`store.load`が失敗した場合`None`を返し、呼び出し側は既存の`executor`/`permission_level`を保持したままフォールバック）
+- [ ] ホットリロードの成功/失敗をTUI/GUIダッシュボードに通知（4.3と連携）（`FileHotReloadLog`に記録は実装済みだが、TUI/GUIダッシュボード自体（4.3）が未実装のため表示は未対応）
+- [x] ホットリロード処理自体もセルフヘルスチェック層の監視対象に含める（4.6と連携）（`health::check_hot_reload`が`FileHotReloadLog`の直近結果を`HealthCheckItem`として`run_health_check`に追加）
 
 ---
 

@@ -3,6 +3,7 @@ use super::system_prompt::{ExtensionInfo, SystemPromptBuilder};
 use super::tools;
 use super::{Task, TaskExecutor, TaskResult, TaskScope};
 use crate::llm::{ClaudeClient, ClaudeError, ContentBlock, Message, ToolDefinition};
+use crate::permission::{PermissionDecision, classify_danger};
 
 /// Upper bound on tool-call round trips for a single task, so a confused or
 /// looping model can't keep a disposable Sub Agent running forever (4.7.2).
@@ -51,12 +52,40 @@ impl<'a> ClaudeTaskExecutor<'a> {
     /// Routes a `tool_use` call to the built-in dispatcher unless `name`
     /// matches a connected MCP server's advertised tool, in which case the
     /// call goes to that server instead (4.7.2).
-    fn execute_tool(&self, name: &str, input: &serde_json::Value) -> (String, bool) {
+    ///
+    /// 5.3's sandboxing: a tool sourced from a third-party (non-bundled)
+    /// Extension is not trusted the way the official one is, so each call
+    /// is additionally classified for danger and checked against `scope`'s
+    /// permission level before it ever reaches the server. A disposable Sub
+    /// Agent cannot itself satisfy an interactive confirmation, so anything
+    /// short of `AutoAllow` is denied outright rather than silently granted.
+    fn execute_tool(
+        &self,
+        name: &str,
+        input: &serde_json::Value,
+        scope: &TaskScope,
+    ) -> (String, bool) {
         if let Some(source) = self
             .mcp_tools
             .iter()
             .find(|source| source.definition.name == name)
         {
+            if !source.trusted {
+                let danger = classify_danger(&format!("call mcp tool {name} with input {input}"));
+                if scope.permission_level.decide(&danger, scope.is_read_only())
+                    != PermissionDecision::AutoAllow
+                {
+                    return (
+                        format!(
+                            "sandboxed: third-party extension tool \"{name}\" requires a higher \
+                             permission level or explicit confirmation, which Sub Agent execution \
+                             cannot grant; denied."
+                        ),
+                        true,
+                    );
+                }
+            }
+
             let mut client = match source.client.lock() {
                 Ok(client) => client,
                 Err(_) => return ("MCP client lock poisoned".to_string(), true),
@@ -95,7 +124,12 @@ impl TaskExecutor for ClaudeTaskExecutor<'_> {
         // already gated upstream by each server's `requiredPermissionLevel`
         // (5.1) at connection time, not by the task's read-only flag, since
         // Open String has no per-tool semantics for arbitrary third-party
-        // tools to apply that flag to.
+        // tools to apply that flag to -- except that 5.3's sandboxing keeps
+        // *untrusted* (non-bundled) Extension tools out of read-only tasks
+        // entirely, mirroring how `write_file`/`run_command` are excluded
+        // from `READ_ONLY_TOOLS` below. Trusted (bundled) tools are always
+        // offered; untrusted ones offered outside read-only tasks are still
+        // gated per-call in `execute_tool`.
         let available_tools: Vec<ToolDefinition> = scope
             .allowed_tools
             .iter()
@@ -103,6 +137,7 @@ impl TaskExecutor for ClaudeTaskExecutor<'_> {
             .chain(
                 self.mcp_tools
                     .iter()
+                    .filter(|source| source.trusted || !scope.is_read_only())
                     .map(|source| source.definition.clone()),
             )
             .collect();
@@ -152,7 +187,7 @@ impl TaskExecutor for ClaudeTaskExecutor<'_> {
             let tool_results = tool_uses
                 .into_iter()
                 .map(|(id, name, input)| {
-                    let (content, is_error) = self.execute_tool(&name, &input);
+                    let (content, is_error) = self.execute_tool(&name, &input, scope);
                     ContentBlock::ToolResult {
                         tool_use_id: id,
                         content,
@@ -262,6 +297,35 @@ mod tests {
             .unwrap_or(false)
     }
 
+    /// Builds an `McpToolSource` backed by a real `McpClient` handshaken
+    /// against canned JSON-RPC responses (no subprocess): the first line
+    /// answers `initialize`, the second answers the one `tools/call` a test
+    /// may make. Tests that never reach the actual server call (e.g. the
+    /// sandboxing denial, which returns before locking the client) only
+    /// need the handshake to succeed.
+    fn mcp_tool_source(name: &str, trusted: bool) -> McpToolSource {
+        let stdout = std::io::Cursor::new(
+            format!(
+                "{}\n{}\n",
+                r#"{"jsonrpc":"2.0","id":1,"result":{}}"#,
+                r#"{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"ok"}],"isError":false}}"#
+            )
+            .into_bytes(),
+        );
+        let client =
+            crate::mcp::McpClient::from_io(None, Box::new(std::io::sink()), Box::new(stdout))
+                .expect("handshake against canned responses should succeed");
+        McpToolSource {
+            definition: ToolDefinition {
+                name: name.to_string(),
+                description: String::new(),
+                input_schema: serde_json::json!({"type": "object"}),
+            },
+            client: std::sync::Arc::new(std::sync::Mutex::new(client)),
+            trusted,
+        }
+    }
+
     #[test]
     fn drives_a_tool_use_loop_then_returns_the_final_text() {
         let path = std::env::temp_dir().join("open_string_claude_executor_test_read.txt");
@@ -327,6 +391,112 @@ mod tests {
 
         mock.assert();
         assert_eq!(result.outcome, TaskOutcome::Success);
+    }
+
+    #[test]
+    fn read_only_task_does_not_offer_an_untrusted_mcp_tool() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/messages")
+                .matches(|req| !body_contains(req, "third_party_delete"));
+            then.status(200).json_body(serde_json::json!({
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn"
+            }));
+        });
+
+        let client = ClaudeClient::new("sk-ant-test").with_base_url(server.base_url());
+        let executor = ClaudeTaskExecutor::new(&client)
+            .with_mcp_tools(vec![mcp_tool_source("third_party_delete", false)]);
+        let task = Task::read_only("inspect config");
+        let scope = TaskScope::for_task(&task, PermissionLevel::GodMode);
+
+        let result = executor.execute(&task, &scope);
+
+        mock.assert();
+        assert_eq!(result.outcome, TaskOutcome::Success);
+    }
+
+    #[test]
+    fn untrusted_mcp_tool_call_is_sandboxed_when_not_auto_allowed() {
+        let server = MockServer::start();
+        let tool_use_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/messages")
+                .matches(|req| !body_contains(req, "tool_result"));
+            then.status(200).json_body(serde_json::json!({
+                "content": [{"type": "tool_use", "id": "toolu_1", "name": "third_party_delete", "input": {"target": "everything"}}],
+                "stop_reason": "tool_use"
+            }));
+        });
+        let final_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/messages")
+                .matches(|req| body_contains(req, "sandboxed"));
+            then.status(200).json_body(serde_json::json!({
+                "content": [{"type": "text", "text": "could not delete"}],
+                "stop_reason": "end_turn"
+            }));
+        });
+
+        let client = ClaudeClient::new("sk-ant-test").with_base_url(server.base_url());
+        let executor = ClaudeTaskExecutor::new(&client)
+            .with_mcp_tools(vec![mcp_tool_source("third_party_delete", false)]);
+        let task = Task::new("clean up");
+        // LowSecurity auto-allows only when no danger is classified; the
+        // tool name/input here trips the "delete" keyword, so this should
+        // require confirmation -- and a Sub Agent can't grant that, so the
+        // sandboxing gate must deny the call (reporting "sandboxed" back to
+        // the model) rather than ever reaching the server.
+        let scope = TaskScope::for_task(&task, PermissionLevel::LowSecurity);
+
+        let result = executor.execute(&task, &scope);
+
+        tool_use_mock.assert();
+        final_mock.assert();
+        assert_eq!(result.outcome, TaskOutcome::Success);
+        assert_eq!(result.summary, "could not delete");
+    }
+
+    #[test]
+    fn trusted_mcp_tool_call_bypasses_the_sandboxing_gate() {
+        let server = MockServer::start();
+        let tool_use_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/messages")
+                .matches(|req| !body_contains(req, "tool_result"));
+            then.status(200).json_body(serde_json::json!({
+                "content": [{"type": "tool_use", "id": "toolu_1", "name": "t0k3n_delete", "input": {"target": "stale cache"}}],
+                "stop_reason": "tool_use"
+            }));
+        });
+        let final_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/messages")
+                .matches(|req| body_contains(req, "tool_result"));
+            then.status(200).json_body(serde_json::json!({
+                "content": [{"type": "text", "text": "done"}],
+                "stop_reason": "end_turn"
+            }));
+        });
+
+        let client = ClaudeClient::new("sk-ant-test").with_base_url(server.base_url());
+        let executor = ClaudeTaskExecutor::new(&client)
+            .with_mcp_tools(vec![mcp_tool_source("t0k3n_delete", true)]);
+        let task = Task::new("clean up");
+        // Same dangerous-sounding tool name/input as the untrusted test, but
+        // sourced from the bundled (trusted) Extension this time -- the
+        // call should reach the server instead of being sandboxed, even
+        // under LowSecurity.
+        let scope = TaskScope::for_task(&task, PermissionLevel::LowSecurity);
+
+        let result = executor.execute(&task, &scope);
+
+        tool_use_mock.assert();
+        final_mock.assert();
+        assert_eq!(result.outcome, TaskOutcome::Success);
+        assert_eq!(result.summary, "done");
     }
 
     #[test]
