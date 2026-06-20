@@ -33,6 +33,7 @@ jobs:
           Copy-Item target/release/open-string.exe dist/
           Copy-Item scripts/install.ps1 dist/
           Compress-Archive -Path dist/* -DestinationPath "${{ matrix.asset_name }}.zip"
+          Copy-Item target/release/open-string.exe "${{ matrix.asset_name }}.exe"
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
@@ -42,6 +43,8 @@ jobs:
           cp scripts/install.sh dist/
           chmod +x dist/install.sh dist/open-string
           tar -czf "${{ matrix.asset_name }}.tar.gz" -C dist .
+          cp target/release/open-string "${{ matrix.asset_name }}"
+          chmod +x "${{ matrix.asset_name }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -50,6 +53,8 @@ jobs:
           path: |
             ${{ matrix.asset_name }}.zip
             ${{ matrix.asset_name }}.tar.gz
+            ${{ matrix.asset_name }}.exe
+            ${{ matrix.asset_name }}
           if-no-files-found: ignore
 
   release:
@@ -66,7 +71,7 @@ jobs:
       - name: Flatten artifacts
         run: |
           mkdir -p release
-          find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' \) -exec mv {} release/ \;
+          find artifacts -type f -exec mv {} release/ \;
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

@@ -9,6 +9,7 @@ mod llm;
 mod mcp;
 mod permission;
 mod prompt;
+mod selfupdate;
 mod session;
 mod skills;
 mod tui;
@@ -123,6 +124,17 @@ enum Command {
     Gateway {
         #[command(subcommand)]
         action: GatewayAction,
+    },
+    /// Check GitHub Releases for a newer published version of this binary
+    /// and, unless `--check` is passed, download and install it in place (4.9)
+    Update {
+        /// Only report whether a newer version is available; never
+        /// download or replace the running binary
+        #[arg(long)]
+        check: bool,
+        /// Skip the confirmation prompt before replacing the running binary
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -653,6 +665,7 @@ fn main() {
             gui::run(workspace.as_deref())
         }
         Command::Gateway { action } => gateway_dispatch(action),
+        Command::Update { check, yes } => update_command(check, yes),
     };
 
     if let Err(message) = result {
@@ -1147,6 +1160,45 @@ fn extension_check_updates(workspace: Option<&std::path::Path>) -> Result<(), St
     } else {
         print_lifecycle_results(&results);
     }
+    Ok(())
+}
+
+fn update_command(check_only: bool, assume_yes: bool) -> Result<(), String> {
+    let client = reqwest::blocking::Client::new();
+    let status = selfupdate::check_for_update(&client)?;
+    println!(
+        "current version: {}\nlatest version:  {}",
+        status.current_version, status.latest_version
+    );
+    if !status.is_newer {
+        println!("Already up to date.");
+        return Ok(());
+    }
+    if check_only {
+        println!("A newer version is available. Run `open-string update` to install it.");
+        return Ok(());
+    }
+    let Some(download_url) = status.download_url else {
+        return Err(format!(
+            "a newer version ({}) is available, but no binary asset matches this platform ({}/{})",
+            status.latest_version,
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        ));
+    };
+    if !assume_yes {
+        let confirmed = prompt::yes_no(&format!(
+            "Download and install v{}? This replaces the running binary. [y/N]: ",
+            status.latest_version
+        ))
+        .map_err(|e| e.to_string())?;
+        if !confirmed {
+            println!("Update cancelled.");
+            return Ok(());
+        }
+    }
+    let path = selfupdate::apply_update(&client, &download_url)?;
+    println!("Updated {} to v{}.", path.display(), status.latest_version);
     Ok(())
 }
 
