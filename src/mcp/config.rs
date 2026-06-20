@@ -81,17 +81,8 @@ impl McpServerConfig {
     pub fn is_compatible_with(&self, current: PermissionLevel) -> bool {
         match self.required_permission_level {
             None => true,
-            Some(required) => permissiveness_rank(current) >= permissiveness_rank(required),
+            Some(required) => current.permissiveness_rank() >= required.permissiveness_rank(),
         }
-    }
-}
-
-fn permissiveness_rank(level: PermissionLevel) -> u8 {
-    match level {
-        PermissionLevel::GodMode => 3,
-        PermissionLevel::LowSecurity => 2,
-        PermissionLevel::MiddlePermission => 1,
-        PermissionLevel::HighProtect => 0,
     }
 }
 

@@ -4,9 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
 dirs = "5"
+hmac = "0.12"
 keyring = "4"
 notify = "6"
 ratatui = "0.29"
@@ -14,8 +16,10 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 rpassword = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 thiserror = "2"
 tiny_http = "0.12"
+tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 
 [dev-dependencies]
 httpmock = "0.7"

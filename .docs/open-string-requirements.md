@@ -180,14 +180,14 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 
 ### 4.4 チャット連携ゲートウェイ
 
-- [ ] OpenClawのゲートウェイ実装を参照した設計方針の策定
-- [ ] Rustによるゲートウェイ処理系の基盤実装（プロトコル非依存の抽象化層）
-- [ ] Discord連携アダプタ
-- [ ] LINE連携アダプタ
-- [ ] Telegram連携アダプタ
-- [ ] チャット経由の指示に対する権限レベル適用（チャットからの操作は既定でより厳しい権限レベルを強制するか要検討）
-- [ ] グループチャットでの誤操作防止（OpenClawで指摘された「open設定での第三者操作」リスクへの対策）
-- [ ] チャット応答の長文圧縮（トークン消費を抑えた返信生成）
+- [x] OpenClawのゲートウェイ実装を参照した設計方針の策定（OpenClaw自体のソースは参照不可のため、本要件定義書が明文化しているOpenClawの既知の問題点(「open設定での第三者操作」「~/.moltbot/の平文秘匿情報漏洩」「誤公開インスタンス」)を踏まえた設計方針を`src/gateway/mod.rs`冒頭のモジュールドキュメントとして明文化: 既定閉鎖の許可リスト、権限レベルのクランプ(エスカレーション禁止)、確認要求の自動拒否、トークンのOSキーリング保存、長文圧縮)
+- [x] Rustによるゲートウェイ処理系の基盤実装（プロトコル非依存の抽象化層）（`src/gateway/mod.rs`の`ChatGateway`トレイト+`run`関数。Mediatorパイプラインへの接続・許可リスト判定・権限レベルクランプ・返信圧縮を全アダプタで共通化）
+- [x] Discord連携アダプタ（`src/gateway/discord.rs`：Discord Gateway(WebSocket、`tungstenite`)でHELLO/IDENTIFY/ハートビート/MESSAGE_CREATEを処理し、REST APIで返信。実運用のBotトークンでの動作確認は未実施で、ドキュメント化されたプロトコルに基づく実装のみ）
+- [x] LINE連携アダプタ（`src/gateway/line.rs`：`tiny_http`によるWebhook受信(`X-Line-Signature`のHMAC-SHA256検証込み)とPush APIによる返信。実チャネルでの動作確認は未実施）
+- [x] Telegram連携アダプタ（`src/gateway/telegram.rs`：`getUpdates`ロングポーリングと`sendMessage`。実Botトークンでの動作確認は未実施)
+- [x] チャット経由の指示に対する権限レベル適用（チャットからの操作は既定でより厳しい権限レベルを強制するか要検討）（`gateway::effective_level`が既定`high-protect`にクランプし、Core本体の設定がより緩くてもチャット経由では昇格させない。確認要求は`DeclineConfirmationPrompt`で常に拒否)
+- [x] グループチャットでの誤操作防止（OpenClawで指摘された「open設定での第三者操作」リスクへの対策）（`GatewayConfig::allowed_senders`は既定で空(誰も許可しない)。`gateway <platform> --allow <id>`で明示的に許可された送信者のみMediatorに到達する)
+- [x] チャット応答の長文圧縮（トークン消費を抑えた返信生成）（`gateway::compress_for_chat`が送信前に文字数上限で切り詰め、切り詰められたことを明示する)
 
 ### 4.5 セッション・ワークスペース管理
 

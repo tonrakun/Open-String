@@ -48,6 +48,19 @@ impl PermissionLevel {
             _ => None,
         }
     }
+
+    /// Higher means more permissive. Used to compare levels against each
+    /// other (e.g. an Extension's `requiredPermissionLevel`, or 4.4's
+    /// chat-gateway permission clamp), separately from `decide`'s
+    /// per-operation confirmation policy.
+    pub fn permissiveness_rank(self) -> u8 {
+        match self {
+            PermissionLevel::GodMode => 3,
+            PermissionLevel::LowSecurity => 2,
+            PermissionLevel::MiddlePermission => 1,
+            PermissionLevel::HighProtect => 0,
+        }
+    }
 }
 
 impl std::fmt::Display for PermissionLevel {

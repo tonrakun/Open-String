@@ -1,6 +1,7 @@
 mod agent;
 mod auth;
 mod dashboard;
+mod gateway;
 mod gui;
 mod health;
 mod hotreload;
@@ -116,6 +117,12 @@ enum Command {
     Gui {
         #[arg(long)]
         workspace: Option<PathBuf>,
+    },
+    /// Chat platform connections (4.4): bridges Discord/Telegram/LINE to
+    /// the Mediator under a stricter, allow-listed permission policy
+    Gateway {
+        #[command(subcommand)]
+        action: GatewayAction,
     },
 }
 
@@ -304,6 +311,78 @@ enum AgentAction {
         read_only: bool,
         /// Evaluate against this workspace's permission override instead
         /// of the global default
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum GatewayPlatform {
+    Discord,
+    Telegram,
+    Line,
+}
+
+impl GatewayPlatform {
+    fn as_str(self) -> &'static str {
+        match self {
+            GatewayPlatform::Discord => "discord",
+            GatewayPlatform::Telegram => "telegram",
+            GatewayPlatform::Line => "line",
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum GatewayAction {
+    /// Store a chat platform's bot token (and, for LINE, its channel
+    /// secret) in the OS secure credential store
+    SetToken {
+        platform: GatewayPlatform,
+        /// Bot/channel access token. If omitted, you will be prompted
+        /// (input hidden)
+        #[arg(long)]
+        token: Option<String>,
+        /// LINE only: the channel secret used to verify webhook signatures
+        #[arg(long)]
+        channel_secret: Option<String>,
+    },
+    /// Run the Discord adapter: connects to the Gateway and bridges
+    /// allow-listed users' messages to the Mediator
+    Discord {
+        /// Sender IDs allowed to issue commands; nobody is allowed by
+        /// default (6.3's allow-list-by-default requirement)
+        #[arg(long)]
+        allow: Vec<String>,
+        /// Caps the permission level chat-originated requests run at,
+        /// regardless of Core's own configured level (default: high-protect)
+        #[arg(long)]
+        max_level: Option<PermissionLevel>,
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Run the Telegram adapter: long-polls for updates and bridges
+    /// allow-listed users' messages to the Mediator
+    Telegram {
+        #[arg(long)]
+        allow: Vec<String>,
+        #[arg(long)]
+        max_level: Option<PermissionLevel>,
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Run the LINE adapter: hosts a webhook receiver and bridges
+    /// allow-listed users'/groups' messages to the Mediator
+    Line {
+        /// Local address to bind the webhook receiver to (e.g. 0.0.0.0:8080).
+        /// Exposing this publicly (reverse proxy, tunnel, etc.) is the
+        /// operator's responsibility
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        bind: String,
+        #[arg(long)]
+        allow: Vec<String>,
+        #[arg(long)]
+        max_level: Option<PermissionLevel>,
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
@@ -501,6 +580,7 @@ fn main() {
             let workspace = resolve_workspace(workspace);
             gui::run(workspace.as_deref())
         }
+        Command::Gateway { action } => gateway_dispatch(action),
     };
 
     if let Err(message) = result {
@@ -550,6 +630,104 @@ fn prompt_hidden(prompt: &str) -> std::io::Result<String> {
     print!("{prompt}");
     std::io::stdout().flush()?;
     rpassword::read_password()
+}
+
+fn gateway_dispatch(action: GatewayAction) -> Result<(), String> {
+    match action {
+        GatewayAction::SetToken {
+            platform,
+            token,
+            channel_secret,
+        } => {
+            let token = match token {
+                Some(token) => token,
+                None => prompt_hidden(&format!("{} bot token: ", platform.as_str()))
+                    .map_err(|e| e.to_string())?,
+            };
+            gateway::GatewayTokenStore::for_platform(platform.as_str()).store(&token)?;
+            if matches!(platform, GatewayPlatform::Line) {
+                let channel_secret = match channel_secret {
+                    Some(secret) => secret,
+                    None => prompt_hidden("LINE channel secret: ").map_err(|e| e.to_string())?,
+                };
+                gateway::GatewayTokenStore::for_platform("line-channel-secret")
+                    .store(&channel_secret)?;
+            }
+            println!("Stored {} credentials.", platform.as_str());
+            Ok(())
+        }
+        GatewayAction::Discord {
+            allow,
+            max_level,
+            workspace,
+        } => {
+            let token = require_gateway_token(GatewayPlatform::Discord)?;
+            let gateway = gateway::discord::DiscordGateway::connect(token)
+                .map_err(|e| format!("failed to connect to Discord: {e}"))?;
+            gateway::run(
+                gateway,
+                resolve_workspace(workspace).as_deref(),
+                gateway_config(allow, max_level),
+            )
+        }
+        GatewayAction::Telegram {
+            allow,
+            max_level,
+            workspace,
+        } => {
+            let token = require_gateway_token(GatewayPlatform::Telegram)?;
+            let gateway = gateway::telegram::TelegramGateway::new(&token);
+            gateway::run(
+                gateway,
+                resolve_workspace(workspace).as_deref(),
+                gateway_config(allow, max_level),
+            )
+        }
+        GatewayAction::Line {
+            bind,
+            allow,
+            max_level,
+            workspace,
+        } => {
+            let token = require_gateway_token(GatewayPlatform::Line)?;
+            let channel_secret = gateway::GatewayTokenStore::for_platform("line-channel-secret")
+                .load()?
+                .ok_or_else(|| {
+                    "no LINE channel secret stored; run `gateway set-token line --channel-secret <secret>` first"
+                        .to_string()
+                })?;
+            let gateway = gateway::line::LineGateway::bind(&bind, token, channel_secret)
+                .map_err(|e| format!("failed to bind the LINE webhook receiver: {e}"))?;
+            gateway::run(
+                gateway,
+                resolve_workspace(workspace).as_deref(),
+                gateway_config(allow, max_level),
+            )
+        }
+    }
+}
+
+fn require_gateway_token(platform: GatewayPlatform) -> Result<String, String> {
+    gateway::GatewayTokenStore::for_platform(platform.as_str())
+        .load()?
+        .ok_or_else(|| {
+            format!(
+                "no {} bot token stored; run `gateway set-token {}` first",
+                platform.as_str(),
+                platform.as_str()
+            )
+        })
+}
+
+fn gateway_config(
+    allow: Vec<String>,
+    max_level: Option<PermissionLevel>,
+) -> gateway::GatewayConfig {
+    gateway::GatewayConfig {
+        allowed_senders: allow,
+        max_level: max_level.unwrap_or(PermissionLevel::HighProtect),
+        ..gateway::GatewayConfig::default()
+    }
 }
 
 /// Builds the permission store a `permission status`/`permission set`
