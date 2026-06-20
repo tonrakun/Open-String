@@ -91,6 +91,21 @@ impl<'a> ClaudeTaskExecutor<'a> {
                 Err(_) => return ("MCP client lock poisoned".to_string(), true),
             };
             return match client.call_tool(name, input.clone()) {
+                // 6.3's indirect-prompt-injection countermeasure: a
+                // third-party tool's result is content Open String didn't
+                // generate and the connected server doesn't control either
+                // (it may just be relaying a fetched page, file, etc.), so
+                // it's framed the same way `fetch_url` frames a page body.
+                // The bundled, officially verified Extension's results are
+                // exempt the same way its tool calls are exempt from 5.3's
+                // sandboxing gate above.
+                Ok(result) if !source.trusted => (
+                    tools::wrap_untrusted_content(
+                        &format!("the third-party extension tool \"{name}\""),
+                        &result.text(),
+                    ),
+                    result.is_error,
+                ),
                 Ok(result) => (result.text(), result.is_error),
                 Err(e) => (e.to_string(), true),
             };
@@ -497,6 +512,43 @@ mod tests {
         final_mock.assert();
         assert_eq!(result.outcome, TaskOutcome::Success);
         assert_eq!(result.summary, "done");
+    }
+
+    #[test]
+    fn an_untrusted_mcp_tool_result_that_is_allowed_through_is_wrapped_as_untrusted_content() {
+        let server = MockServer::start();
+        let tool_use_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/messages")
+                .matches(|req| !body_contains(req, "tool_result"));
+            then.status(200).json_body(serde_json::json!({
+                "content": [{"type": "tool_use", "id": "toolu_1", "name": "fetch_data", "input": {}}],
+                "stop_reason": "tool_use"
+            }));
+        });
+        let final_mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/messages").matches(|req| {
+                body_contains(req, "BEGIN UNTRUSTED CONTENT") && body_contains(req, "ok")
+            });
+            then.status(200).json_body(serde_json::json!({
+                "content": [{"type": "text", "text": "done"}],
+                "stop_reason": "end_turn"
+            }));
+        });
+
+        let client = ClaudeClient::new("sk-ant-test").with_base_url(server.base_url());
+        let executor = ClaudeTaskExecutor::new(&client)
+            .with_mcp_tools(vec![mcp_tool_source("fetch_data", false)]);
+        let task = Task::new("fetch some data");
+        // GodMode always auto-allows, so this exercises the "untrusted but
+        // permitted" path rather than the sandboxing denial.
+        let scope = TaskScope::for_task(&task, PermissionLevel::GodMode);
+
+        let result = executor.execute(&task, &scope);
+
+        tool_use_mock.assert();
+        final_mock.assert();
+        assert_eq!(result.outcome, TaskOutcome::Success);
     }
 
     #[test]
