@@ -266,6 +266,7 @@ Mediatorは常駐かつユーザーと長時間対話し続けるため、Sub Ag
 - [x] 新バージョンが存在する場合、コマンド一つで実行中バイナリ自身をダウンロード・置換できる（`open-string update`。確認プロンプト（`--yes`で省略可）の後、4.8で同封した単体バイナリアセットをダウンロードし、`src/selfupdate.rs::apply_update`が一時ファイルへの書き込み→実行中バイナリのrename退避→新バイナリへのrenameという手順で安全に置換。Windows/Unixいずれも実行中ファイルのrename自体は許可される特性を利用）
 - [x] 対応プラットフォームの判定とアセット名の整合性（`platform_asset_name`が`std::env::consts::OS/ARCH`から`release.yml`のアセット命名規則と一致するファイル名を解決。一致するアセットが無い場合はエラーで中断し、置換を行わない）
 - [x] 置換に失敗した場合のロールバック（renameの後段が失敗した場合は退避した旧バイナリを元の場所へrenameで戻す。Windows上で実行中ファイルの削除が拒否される場合は次回起動時に残骸を掃除する）
+- [x] `--version`にビルド情報（gitコミットハッシュ）を埋め込み、配布バイナリが実際どのコミットからビルドされたかをユーザー自身が確認できるようにする（新規`build.rs`が`git rev-parse --short HEAD`を実行し`OPEN_STRING_GIT_HASH`環境変数として埋め込み、取得失敗時は`unknown`。`main.rs`の`Cli`の`#[command(version = ...)]`で`CARGO_PKG_VERSION`と結合表示。`.git/HEAD`の変更で再ビルド時に追従）
 
 ---
 

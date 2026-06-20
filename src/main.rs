@@ -40,7 +40,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "open-string",
-    version,
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("OPEN_STRING_GIT_HASH"), ")"),
     about = "Open String Core CLI",
     after_help = "Quickstart:\n  \
                   open-string auth login                    Store your Anthropic API key\n  \
