@@ -114,6 +114,7 @@ Open String（オープン・ストリング）。「糸」「つながり」「
   - [x] `middle permission`：ディレクトリ・コマンドのホワイトリスト制。範囲外操作は確認を要求（レベル定義のみ。ホワイトリスト判定ロジックはMediator側で実装予定）
   - [x] `high protect`：原則すべての操作に確認を要求。読み取り専用操作のみ自動許可（デフォルト値として採用）
 - [x] 権限レベルごとの操作ログ記録（`AuditLogger`/`FileAuditLogger`、`src/permission/audit_log.rs`。`permission set`・god mode再確認の判定結果を記録）
+- [x] 監査ログのサイズ上限・ローテーション、および`audit export`コマンドによるエクスポート（`FileAuditLogger::record`が書き込み前にサイズを確認し、5MiBを超えていたら`audit.log.1`へrenameしてから新規ファイルへ書き込みを継続。`permission::read_entries`がタブ区切り1行フォーマットを`ParsedEntry`へパースし、`open-string audit export [--format text|json] [--out PATH] [--include-rotated]`でテキスト/JSON形式での閲覧・ファイル出力に対応）
 - [x] 危険操作（削除・送信・外部送信・課金）の検出ロジック（権限レベルに依らない共通フィルタ）（`classify`関数、`src/permission/danger.rs`）
 - [x] **MCP設定ファイル等、Coreの動作に関わるコンフィグの自己編集も危険操作として権限管理の対象に含める**（5.4と連携。ユーザー確認を経た上での自動導入は許可するが、無断での設定変更は権限レベルに応じて拒否・確認要求する）（`DangerKind::ConfigEdit`/`CONFIG_EDIT_KEYWORDS`、`src/permission/danger.rs`）
 - [x] ワークスペース単位での権限レベル個別設定（`WorkspacePermissionStore`、`src/permission/workspace_store.rs`。`--workspace`指定時はワークスペース配下`.open-string/permission`を優先し、未設定時はグローバル設定にフォールバック）

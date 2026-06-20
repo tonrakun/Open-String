@@ -147,6 +147,33 @@ enum Command {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+    /// Inspect or export the permission-decision audit log (6.3)
+    Audit {
+        #[command(subcommand)]
+        action: AuditAction,
+    },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum AuditExportFormat {
+    Text,
+    Json,
+}
+
+#[derive(Subcommand)]
+enum AuditAction {
+    /// Print every recorded audit entry (oversized logs are rotated to
+    /// `audit.log.1`, which this can include with `--include-rotated`)
+    Export {
+        #[arg(long, value_enum, default_value_t = AuditExportFormat::Text)]
+        format: AuditExportFormat,
+        /// Write to this file instead of stdout
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Also include the previous rotated log file, if one exists
+        #[arg(long)]
+        include_rotated: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -677,6 +704,13 @@ fn main() {
         }
         Command::Gateway { action } => gateway_dispatch(action),
         Command::Update { check, yes } => update_command(check, yes),
+        Command::Audit { action } => match action {
+            AuditAction::Export {
+                format,
+                out,
+                include_rotated,
+            } => audit_export(format, out, include_rotated),
+        },
     };
 
     if let Err(message) = result {
@@ -1211,6 +1245,49 @@ fn update_command(check_only: bool, assume_yes: bool) -> Result<(), String> {
     let path = selfupdate::apply_update(&client, &download_url)?;
     println!("Updated {} to v{}.", path.display(), status.latest_version);
     Ok(())
+}
+
+fn audit_export(
+    format: AuditExportFormat,
+    out: Option<PathBuf>,
+    include_rotated: bool,
+) -> Result<(), String> {
+    let logger = FileAuditLogger::new().map_err(|e| format!("failed to open audit log: {e}"))?;
+    let mut entries: Vec<permission::ParsedEntry> = if include_rotated {
+        permission::read_entries(&logger.rotated_path())?
+    } else {
+        Vec::new()
+    };
+    entries.extend(permission::read_entries(logger.path())?);
+
+    let rendered = match format {
+        AuditExportFormat::Text => entries
+            .iter()
+            .map(|e| {
+                let danger = if e.danger_kinds.is_empty() {
+                    "none".to_string()
+                } else {
+                    e.danger_kinds.join(",")
+                };
+                format!(
+                    "{}\t{}\t{}\t{}\t{}",
+                    e.timestamp, e.level, e.decision, danger, e.operation
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        AuditExportFormat::Json => {
+            serde_json::to_string_pretty(&entries).map_err(|e| e.to_string())?
+        }
+    };
+
+    match out {
+        Some(path) => std::fs::write(&path, rendered).map_err(|e| e.to_string()),
+        None => {
+            println!("{rendered}");
+            Ok(())
+        }
+    }
 }
 
 fn print_health_report(report: &health::HealthReport) {

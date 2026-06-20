@@ -102,6 +102,7 @@ open-string gui   # ローカルWeb GUI（既定ブラウザで開く）
 | `tui` / `gui` | ターミナルUI / ローカルWeb GUIの起動 |
 | `gateway set-token / discord / telegram / line` | チャットゲートウェイのトークン登録とBot起動 |
 | `update [--check] [--yes]` | GitHub Releasesの最新バージョン確認・実行中バイナリの自己更新 |
+| `audit export [--format text\|json] [--out PATH] [--include-rotated]` | 監査ログ（操作許可・拒否の記録）のエクスポート |
 
 ## アーキテクチャ概要
 
