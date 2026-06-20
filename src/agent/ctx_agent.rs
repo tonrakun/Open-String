@@ -1,6 +1,22 @@
 use super::aggregate::AggregatedReport;
 use crate::llm::{ClaudeClient, ClaudeError, ContentBlock, Message};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+const DEFAULT_TRIGGER_THRESHOLD_PCT: u8 = 70;
+const DEFAULT_TARGET_SIZE_PCT: u8 = 10;
+const DEFAULT_KEEP_RECENT_TURNS: usize = 4;
+
+fn default_trigger_threshold_pct() -> u8 {
+    DEFAULT_TRIGGER_THRESHOLD_PCT
+}
+
+fn default_target_size_pct() -> u8 {
+    DEFAULT_TARGET_SIZE_PCT
+}
+
+fn default_keep_recent_turns() -> usize {
+    DEFAULT_KEEP_RECENT_TURNS
+}
 
 /// Tunable knobs for the Ctx Agent's compaction policy (4.7.5/4.2.2): when
 /// to trigger relative to the model's context window, how small the
@@ -8,24 +24,83 @@ use std::path::PathBuf;
 /// keep verbatim rather than summarize. All are user-configurable with the
 /// specced defaults (70% trigger, 10% target) so the threshold/granularity
 /// trade-off can be tuned by benchmark rather than hardcoded.
-#[derive(Debug, Clone, Copy)]
+///
+/// Persisted to disk (5.5's "コンテキスト圧縮の閾値...についてもホットリ
+/// ロード対応") via [`load_ctx_agent_config`]/[`save_ctx_agent_config`]
+/// rather than only existing as `chat`'s CLI flags, so a value set once is
+/// picked up by `hotreload::ConfigWatcher` like `.mcp.json` instead of
+/// needing to be passed on every invocation.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct CtxAgentConfig {
+    #[serde(
+        default = "default_trigger_threshold_pct",
+        rename = "triggerThresholdPct"
+    )]
     pub trigger_threshold_pct: u8,
+    #[serde(default = "default_target_size_pct", rename = "targetSizePct")]
     pub target_size_pct: u8,
     /// Number of the most recent messages excluded from summarization, so
     /// compaction never erases the immediate back-and-forth the Mediator
     /// needs for its very next decision (4.2.2: 過剰な要約による弊害を防ぐ).
+    #[serde(default = "default_keep_recent_turns", rename = "keepRecentTurns")]
     pub keep_recent_turns: usize,
 }
 
 impl Default for CtxAgentConfig {
     fn default() -> Self {
         Self {
-            trigger_threshold_pct: 70,
-            target_size_pct: 10,
-            keep_recent_turns: 4,
+            trigger_threshold_pct: DEFAULT_TRIGGER_THRESHOLD_PCT,
+            target_size_pct: DEFAULT_TARGET_SIZE_PCT,
+            keep_recent_turns: DEFAULT_KEEP_RECENT_TURNS,
         }
     }
+}
+
+/// Filename for the persisted Ctx Agent config, stored as Core-internal
+/// state under `.open-string/` (like the permission-level override),
+/// rather than alongside `.mcp.json` (a user-facing Extension manifest).
+const CTX_AGENT_CONFIG_FILE: &str = "ctx_agent.json";
+
+/// Path to the persisted Ctx Agent config for a workspace, or the OS config
+/// directory for the global scope -- the same workspace-scoped/global split
+/// `session::memory_dir_for` uses for other Core-internal state. Exposed so
+/// callers that need to watch it for changes (5.5's hot reload) don't have
+/// to duplicate this layout decision.
+pub fn ctx_agent_config_path(workspace: Option<&Path>) -> Result<PathBuf, String> {
+    match workspace {
+        Some(dir) => Ok(dir.join(".open-string").join(CTX_AGENT_CONFIG_FILE)),
+        None => dirs::config_dir()
+            .ok_or_else(|| "could not determine OS config directory".to_string())
+            .map(|dir| dir.join("open-string").join(CTX_AGENT_CONFIG_FILE)),
+    }
+}
+
+/// Loads the persisted Ctx Agent config, falling back to
+/// [`CtxAgentConfig::default`] when no file has been saved yet -- the same
+/// "missing means default" policy `mcp::load` uses for `.mcp.json`.
+pub fn load_ctx_agent_config(workspace: Option<&Path>) -> Result<CtxAgentConfig, String> {
+    let path = ctx_agent_config_path(workspace)?;
+    match std::fs::read_to_string(&path) {
+        Ok(raw) => {
+            serde_json::from_str(&raw).map_err(|e| format!("invalid {}: {e}", path.display()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(CtxAgentConfig::default()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Persists a Ctx Agent config so future `chat` sessions (and a running
+/// one's hot reload) pick it up without needing the CLI flags repeated.
+pub fn save_ctx_agent_config(
+    workspace: Option<&Path>,
+    config: &CtxAgentConfig,
+) -> Result<(), String> {
+    let path = ctx_agent_config_path(workspace)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())
 }
 
 /// Lightweight first-line defense against context growth (4.2.2), applied
@@ -630,5 +705,40 @@ mod tests {
         assert!(!is_phase_boundary(&aggregated_report(0, 0, 0)));
         assert!(!is_phase_boundary(&aggregated_report(1, 1, 0)));
         assert!(!is_phase_boundary(&aggregated_report(1, 0, 1)));
+    }
+
+    fn temp_workspace_for_ctx_config() -> PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("open-string-ctx-config-test-{id}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn load_ctx_agent_config_returns_default_when_no_file_exists() {
+        let workspace = temp_workspace_for_ctx_config();
+        let config = load_ctx_agent_config(Some(&workspace)).unwrap();
+        assert_eq!(config.trigger_threshold_pct, DEFAULT_TRIGGER_THRESHOLD_PCT);
+        assert_eq!(config.target_size_pct, DEFAULT_TARGET_SIZE_PCT);
+        assert_eq!(config.keep_recent_turns, DEFAULT_KEEP_RECENT_TURNS);
+        std::fs::remove_dir_all(&workspace).ok();
+    }
+
+    #[test]
+    fn save_then_load_round_trips_a_ctx_agent_config() {
+        let workspace = temp_workspace_for_ctx_config();
+        let config = CtxAgentConfig {
+            trigger_threshold_pct: 55,
+            target_size_pct: 15,
+            keep_recent_turns: 6,
+        };
+        save_ctx_agent_config(Some(&workspace), &config).unwrap();
+
+        let loaded = load_ctx_agent_config(Some(&workspace)).unwrap();
+        assert_eq!(loaded.trigger_threshold_pct, 55);
+        assert_eq!(loaded.target_size_pct, 15);
+        assert_eq!(loaded.keep_recent_turns, 6);
+        std::fs::remove_dir_all(&workspace).ok();
     }
 }

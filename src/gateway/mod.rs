@@ -193,6 +193,7 @@ pub fn run<G: ChatGateway>(
     let mut mediator = Mediator::new(&clamped_store, &confirmation, &audit_logger);
     let executor = ClaudeTaskExecutor::new(&client)
         .with_extensions(agent::load_connected_extensions(workspace))
+        .with_skills(crate::skills::load_skills(workspace))
         .with_mcp_tools(agent::connect_workspace_tools(workspace, level));
 
     println!(

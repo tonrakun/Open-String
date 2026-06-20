@@ -10,6 +10,7 @@
 use std::path::Path;
 
 use crate::permission::PermissionLevel;
+use crate::skills::Skill;
 
 /// A single named, versioned piece of system-prompt text.
 #[derive(Debug, Clone, Copy)]
@@ -186,12 +187,26 @@ pub fn load_connected_extensions(workspace: Option<&Path>) -> Vec<ExtensionInfo>
         .collect()
 }
 
+/// Renders a loaded SKILLS file's full body into the system prompt (5.1's
+/// "SKILLS形式の拡張機能読み込み機構"). Unlike an Extension, a Skill has no
+/// separate Core-generated fallback guide -- its body is itself the
+/// instructions, so there is nothing sensible to fall back to when it's
+/// present at all.
+fn skill_fragment(skill: &Skill) -> String {
+    format!(
+        "\n\n## Skill: {}\n{}\n\n{}",
+        skill.name, skill.description, skill.body
+    )
+}
+
 /// Builds a Sub Agent system prompt from fragments chosen for the current
-/// permission level, read-only status, and connected Extensions.
+/// permission level, read-only status, connected Extensions, and loaded
+/// SKILLS.
 pub struct SystemPromptBuilder<'a> {
     permission_level: PermissionLevel,
     read_only: bool,
     extensions: &'a [ExtensionInfo],
+    skills: &'a [Skill],
     scope_description: Option<String>,
 }
 
@@ -201,12 +216,21 @@ impl<'a> SystemPromptBuilder<'a> {
             permission_level,
             read_only,
             extensions: &[],
+            skills: &[],
             scope_description: None,
         }
     }
 
     pub fn with_extensions(mut self, extensions: &'a [ExtensionInfo]) -> Self {
         self.extensions = extensions;
+        self
+    }
+
+    /// Registers SKILLS loaded for this run so each one's body is injected
+    /// into the system prompt (5.1/5.5). A Skill not passed here contributes
+    /// no prompt fragment, mirroring how an unconnected Extension behaves.
+    pub fn with_skills(mut self, skills: &'a [Skill]) -> Self {
+        self.skills = skills;
         self
     }
 
@@ -227,6 +251,10 @@ impl<'a> SystemPromptBuilder<'a> {
 
         for extension in self.extensions {
             out.push_str(&extension.fragment());
+        }
+
+        for skill in self.skills {
+            out.push_str(&skill_fragment(skill));
         }
 
         if self.read_only {
@@ -302,6 +330,28 @@ mod tests {
             .build();
         assert!(prompt.contains("## custom-ext usage"));
         assert!(prompt.contains("custom-ext is connected as an Extension"));
+    }
+
+    #[test]
+    fn unconnected_skills_contribute_no_fragment() {
+        let prompt = SystemPromptBuilder::new(PermissionLevel::GodMode, false).build();
+        assert!(!prompt.contains("## Skill:"));
+    }
+
+    #[test]
+    fn loaded_skill_contributes_its_body_to_the_prompt() {
+        let skills = vec![Skill {
+            name: "deploy".to_string(),
+            description: "Deploys the app".to_string(),
+            body: "Run `cargo build --release` then ship the binary.".to_string(),
+            path: std::path::PathBuf::from("deploy.md"),
+        }];
+        let prompt = SystemPromptBuilder::new(PermissionLevel::GodMode, false)
+            .with_skills(&skills)
+            .build();
+        assert!(prompt.contains("## Skill: deploy"));
+        assert!(prompt.contains("Deploys the app"));
+        assert!(prompt.contains("Run `cargo build --release` then ship the binary."));
     }
 
     #[test]

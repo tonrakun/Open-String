@@ -103,11 +103,15 @@ impl HotReloadLog for FileHotReloadLog {
     }
 }
 
-/// Non-blocking filesystem-change detector for a fixed set of config file
-/// paths. `poll_changed` is meant to be checked once per turn of a
-/// long-running loop (e.g. `chat`'s REPL): a config file that doesn't exist
-/// yet, or that gets removed and recreated by an atomic save, is still
-/// observed because the *parent directory* is what's actually watched.
+/// Non-blocking filesystem-change detector for a fixed set of targets, each
+/// either a single config file or an entire directory (e.g. SKILLS' flat
+/// `skills/` directory, where any file inside being added/edited/removed
+/// should count -- 5.5). `poll_changed` is meant to be checked once per turn
+/// of a long-running loop (e.g. `chat`'s REPL): a file target that doesn't
+/// exist yet, or that gets removed and recreated by an atomic save, is still
+/// observed because the *parent directory* is what's actually watched; a
+/// directory target is watched directly so changes to its contents are seen
+/// without needing a representative file inside it to already exist.
 pub struct ConfigWatcher {
     _watcher: RecommendedWatcher,
     rx: Receiver<notify::Result<Event>>,
@@ -124,10 +128,13 @@ impl ConfigWatcher {
 
         let mut watched_dirs = std::collections::HashSet::new();
         for path in paths {
-            let dir = path
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from("."));
+            let dir = if path.is_dir() {
+                path.clone()
+            } else {
+                path.parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from("."))
+            };
             if watched_dirs.insert(dir.clone()) && dir.exists() {
                 watcher
                     .watch(&dir, RecursiveMode::NonRecursive)
@@ -167,7 +174,18 @@ impl ConfigWatcher {
     }
 }
 
+/// Matches a filesystem event path `a` against a watched target `b`. A
+/// directory target matches anything underneath it (a SKILLS file added or
+/// edited inside `skills/`); a file target requires an exact match, falling
+/// back to canonicalized comparison so a relative target still matches an
+/// event path the OS reports in a different (e.g. absolute) form.
 fn paths_match(a: &Path, b: &Path) -> bool {
+    if b.is_dir() {
+        if a.starts_with(b) {
+            return true;
+        }
+        return matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a.starts_with(&b));
+    }
     if a == b {
         return true;
     }
@@ -261,6 +279,36 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         assert!(detected, "expected the watcher to observe the write");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn poll_changed_detects_a_new_file_inside_a_watched_directory() {
+        let dir = temp_dir();
+        let skills_dir = dir.join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+
+        let watcher = ConfigWatcher::watch(std::slice::from_ref(&skills_dir)).unwrap();
+        assert!(!watcher.poll_changed());
+
+        std::fs::write(
+            skills_dir.join("new-skill.md"),
+            "---\nname: new-skill\ndescription: test\n---\nbody\n",
+        )
+        .unwrap();
+
+        let mut detected = false;
+        for _ in 0..40 {
+            if watcher.poll_changed() {
+                detected = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            detected,
+            "expected the watcher to observe the new file inside the directory"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

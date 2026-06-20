@@ -4,6 +4,7 @@ use super::tools;
 use super::{Task, TaskExecutor, TaskResult, TaskScope};
 use crate::llm::{ClaudeClient, ClaudeError, ContentBlock, Message, ToolDefinition};
 use crate::permission::{PermissionDecision, classify_danger};
+use crate::skills::Skill;
 
 /// Upper bound on tool-call round trips for a single task, so a confused or
 /// looping model can't keep a disposable Sub Agent running forever (4.7.2).
@@ -20,6 +21,7 @@ const MAX_TOOL_ITERATIONS: usize = 8;
 pub struct ClaudeTaskExecutor<'a> {
     client: &'a ClaudeClient,
     extensions: Vec<ExtensionInfo>,
+    skills: Vec<Skill>,
     mcp_tools: Vec<McpToolSource>,
 }
 
@@ -28,6 +30,7 @@ impl<'a> ClaudeTaskExecutor<'a> {
         Self {
             client,
             extensions: Vec::new(),
+            skills: Vec::new(),
             mcp_tools: Vec::new(),
         }
     }
@@ -37,6 +40,14 @@ impl<'a> ClaudeTaskExecutor<'a> {
     /// not passed here contribute no prompt fragment.
     pub fn with_extensions(mut self, extensions: Vec<ExtensionInfo>) -> Self {
         self.extensions = extensions;
+        self
+    }
+
+    /// Registers the SKILLS loaded for this run so each one's body is
+    /// injected into the system prompt (5.1's "SKILLS形式の拡張機能読み込み
+    /// 機構"). Skills not passed here contribute no prompt fragment.
+    pub fn with_skills(mut self, skills: Vec<Skill>) -> Self {
+        self.skills = skills;
         self
     }
 
@@ -132,6 +143,7 @@ impl TaskExecutor for ClaudeTaskExecutor<'_> {
         let system = SystemPromptBuilder::new(scope.permission_level, scope.is_read_only())
             .with_scope_description(scope.describe())
             .with_extensions(&self.extensions)
+            .with_skills(&self.skills)
             .build();
 
         // Extension-sourced tools (4.7.2) are offered alongside the

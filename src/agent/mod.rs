@@ -24,7 +24,8 @@ pub use confirmation::{CliConfirmationPrompt, ConfirmationPrompt};
 pub use conversation::{MediatorTurn, ProposedExtension, plan};
 pub use ctx_agent::{
     CtxAgentConfig, FileMemoryStore, MemoryStore, clear_stale_tool_results, compact,
-    estimate_history_tokens, is_phase_boundary, should_compact,
+    ctx_agent_config_path, estimate_history_tokens, is_phase_boundary, load_ctx_agent_config,
+    save_ctx_agent_config, should_compact,
 };
 pub use executor::TaskExecutor;
 pub use mcp_memory::connect_for_state_management;

@@ -291,8 +291,8 @@ Mediatorは常駐かつユーザーと長時間対話し続けるため、Sub Ag
 - [x] 導入失敗時（接続不能・認証エラー等）のロールバック（設定ファイルを導入前の状態に復元）（`apply_proposed_extension`が追加直後に`McpClient::connect`で接続確認し、失敗時は`extension_remove`で`.mcp.json`を導入前の状態に戻す）
 
 ### 5.5 Extension/エージェント動作コンフィグのホットリロード（新規要件）
-- [ ] MCPサーバー・SKILLSの追加・削除・設定変更をCore再起動なしで即時反映する仕組みを実装する（`.mcp.json`/Extension/権限レベルは`hotreload::ConfigWatcher`+`reload_chat_runtime`で対応済み。SKILLSは`chat`ループにまだ組み込まれておらず未対応 -- 別途SKILLS統合タスクで対応）
-- [ ] Mediator/Sub Agent/Ctx Agentの動作に関わるコンフィグ（権限レベル設定、コンテキスト圧縮の閾値、システムプロンプト断片等）についても同様にホットリロード対応とする（権限レベルとExtension由来のシステムプロンプト断片は対応済み。コンテキスト圧縮閾値（`CtxAgentConfig`）はCLIオプションのみで永続設定ファイルが無く、ホットリロード対象として未対応）
+- [x] MCPサーバー・SKILLSの追加・削除・設定変更をCore再起動なしで即時反映する仕組みを実装する（`.mcp.json`/Extension/権限レベルに加え、SKILLSも`SystemPromptBuilder::with_skills`/`ClaudeTaskExecutor::with_skills`でMediator/Sub Agentのシステムプロンプトに統合済み。`build_chat_executor`が`skills::load_skills`を都度再読み込みするため、`hotreload::ConfigWatcher`の監視対象に`skills::skills_dir`を追加しただけで`.mcp.json`と同じターン境界フォールバックが適用される。`ConfigWatcher`はディレクトリ単位の監視（配下のファイル追加/編集/削除を包含一致で検知）にも対応）
+- [x] Mediator/Sub Agent/Ctx Agentの動作に関わるコンフィグ（権限レベル設定、コンテキスト圧縮の閾値、システムプロンプト断片等）についても同様にホットリロード対応とする（権限レベルとExtension由来のシステムプロンプト断片に加え、コンテキスト圧縮の閾値（`CtxAgentConfig`）も`agent::{load_ctx_agent_config, save_ctx_agent_config}`でワークスペース単位（`.open-string/ctx_agent.json`）/グローバル（OS設定ディレクトリ）に永続化。`open-string agent ctx-config show/set`で設定でき、`hotreload::ConfigWatcher`の監視対象にも追加して`.mcp.json`と同じターン境界フォールバックで再読み込みする。`chat`起動時の`--ctx-trigger-threshold-pct`/`--ctx-target-size-pct`は永続設定の上に重ねる一回限りの上書きとして、ホットリロード後も再適用される）
 - [x] ホットリロード発生時、実行中のSub Agent/Ctx Agentには影響を与えない（実行中タスクは旧設定のまま完走させ、次回生成以降から新設定を適用する）（`chat`のメインループの先頭、ターン境界でのみ`reload_chat_runtime`を呼ぶため、実行中のディスパッチには影響しない）
 - [x] 設定ファイルの変更監視（ファイルシステムイベント検知）と、不正/破損した設定が読み込まれた場合のフォールバック（直前の正常な設定を保持して復元）（`hotreload::ConfigWatcher`が`notify`でファイル変更を検知。`reload_chat_runtime`は`mcp::load`/`store.load`が失敗した場合`None`を返し、呼び出し側は既存の`executor`/`permission_level`を保持したままフォールバック）
 - [x] ホットリロードの成功/失敗をTUI/GUIダッシュボードに通知（4.3と連携）（`health::check_hot_reload`が`FileHotReloadLog`の直近結果をヘルスチェック項目として`HealthReport`に含め、4.3のTUI/GUIダッシュボードはいずれも`HealthReport`の全項目（hot_reloadを含む）を表示するため、追加の連携実装なしで通知される）

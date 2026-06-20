@@ -326,6 +326,35 @@ enum AgentAction {
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
+    /// Show or persist the Ctx Agent's compaction config (4.7.5), so it
+    /// survives across `chat` invocations and is picked up by hot reload
+    /// (5.5) instead of needing the `--ctx-*` flags repeated every time
+    CtxConfig {
+        #[command(subcommand)]
+        action: CtxConfigAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum CtxConfigAction {
+    /// Show the persisted Ctx Agent config (or the defaults, if none has
+    /// been saved yet)
+    Show {
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Persist Ctx Agent config values; any field left unset keeps its
+    /// current persisted (or default) value
+    Set {
+        #[arg(long)]
+        trigger_threshold_pct: Option<u8>,
+        #[arg(long)]
+        target_size_pct: Option<u8>,
+        #[arg(long)]
+        keep_recent_turns: Option<usize>,
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -433,11 +462,15 @@ fn main() {
             }
             AuthAction::Status { workspace } => {
                 let workspace = resolve_workspace(workspace);
-                status(&AnthropicApiKeyProvider::for_workspace(workspace.as_deref()))
+                status(&AnthropicApiKeyProvider::for_workspace(
+                    workspace.as_deref(),
+                ))
             }
             AuthAction::Logout { workspace } => {
                 let workspace = resolve_workspace(workspace);
-                logout(&AnthropicApiKeyProvider::for_workspace(workspace.as_deref()))
+                logout(&AnthropicApiKeyProvider::for_workspace(
+                    workspace.as_deref(),
+                ))
             }
         },
         Command::Permission { action } => match action {
@@ -501,6 +534,22 @@ fn main() {
                 permission_store_for(workspace.as_deref())
                     .and_then(|store| prompt_versions(store.as_ref(), read_only))
             }
+            AgentAction::CtxConfig { action } => match action {
+                CtxConfigAction::Show { workspace } => {
+                    ctx_config_show(resolve_workspace(workspace).as_deref())
+                }
+                CtxConfigAction::Set {
+                    trigger_threshold_pct,
+                    target_size_pct,
+                    keep_recent_turns,
+                    workspace,
+                } => ctx_config_set(
+                    resolve_workspace(workspace).as_deref(),
+                    trigger_threshold_pct,
+                    target_size_pct,
+                    keep_recent_turns,
+                ),
+            },
         },
         Command::Workspace { action } => match action {
             WorkspaceAction::Create { path, name } => workspace_create(&path, name),
@@ -1156,6 +1205,39 @@ fn prompt_versions(store: &dyn PermissionStore, read_only: bool) -> Result<(), S
     Ok(())
 }
 
+fn ctx_config_show(workspace: Option<&std::path::Path>) -> Result<(), String> {
+    let config = agent::load_ctx_agent_config(workspace)?;
+    println!(
+        "trigger_threshold_pct: {}\ntarget_size_pct: {}\nkeep_recent_turns: {}",
+        config.trigger_threshold_pct, config.target_size_pct, config.keep_recent_turns
+    );
+    Ok(())
+}
+
+fn ctx_config_set(
+    workspace: Option<&std::path::Path>,
+    trigger_threshold_pct: Option<u8>,
+    target_size_pct: Option<u8>,
+    keep_recent_turns: Option<usize>,
+) -> Result<(), String> {
+    let mut config = agent::load_ctx_agent_config(workspace)?;
+    if let Some(pct) = trigger_threshold_pct {
+        config.trigger_threshold_pct = pct;
+    }
+    if let Some(pct) = target_size_pct {
+        config.target_size_pct = pct;
+    }
+    if let Some(turns) = keep_recent_turns {
+        config.keep_recent_turns = turns;
+    }
+    agent::save_ctx_agent_config(workspace, &config)?;
+    println!(
+        "Ctx Agent config saved: trigger_threshold_pct={}, target_size_pct={}, keep_recent_turns={}",
+        config.trigger_threshold_pct, config.target_size_pct, config.keep_recent_turns
+    );
+    Ok(())
+}
+
 fn permission_set(
     store: &dyn PermissionStore,
     audit_logger: &dyn AuditLogger,
@@ -1244,6 +1326,7 @@ fn run_task(
         .map_err(|e| format!("failed to read permission level: {e}"))?;
     let executor = ClaudeTaskExecutor::new(&client)
         .with_extensions(agent::load_connected_extensions(workspace))
+        .with_skills(skills::load_skills(workspace))
         .with_mcp_tools(agent::connect_workspace_tools(workspace, level));
 
     match mediator.dispatch(&task, &executor) {
@@ -1292,6 +1375,7 @@ fn run_tasks(
         .map_err(|e| format!("failed to read permission level: {e}"))?;
     let executor = ClaudeTaskExecutor::new(&client)
         .with_extensions(agent::load_connected_extensions(workspace))
+        .with_skills(skills::load_skills(workspace))
         .with_mcp_tools(agent::connect_workspace_tools(workspace, level));
 
     // The Mediator aggregates results across the batch (4.7.4): agreeing
@@ -1332,9 +1416,10 @@ struct ChatOptions {
 }
 
 /// Builds the Sub Agent executor for a `chat` session: connected
-/// Extensions plus the MCP tools they advertise, both re-derived from
-/// `.mcp.json` and the active permission level. Factored out so the
-/// initial build and every hot reload (5.5) construct it identically.
+/// Extensions, loaded SKILLS, plus the MCP tools they advertise, all
+/// re-derived from `.mcp.json`/the workspace's `skills/` directory and the
+/// active permission level. Factored out so the initial build and every
+/// hot reload (5.5) construct it identically.
 fn build_chat_executor<'a>(
     client: &'a ClaudeClient,
     workspace: Option<&std::path::Path>,
@@ -1342,20 +1427,31 @@ fn build_chat_executor<'a>(
 ) -> ClaudeTaskExecutor<'a> {
     ClaudeTaskExecutor::new(client)
         .with_extensions(agent::load_connected_extensions(workspace))
+        .with_skills(skills::load_skills(workspace))
         .with_mcp_tools(agent::connect_workspace_tools(workspace, level))
 }
 
-/// 5.5's hot reload: re-reads the permission level and `.mcp.json`-backed
-/// executor from disk and records the attempt to `log`. Returns `None`
-/// (keeping the caller's existing state untouched -- the "直前の正常な設
-/// 定を保持して復元" fallback) when either read fails, e.g. because a
-/// concurrent edit left `.mcp.json` briefly malformed.
+/// 5.5's hot reload: re-reads the permission level, `.mcp.json`-backed
+/// executor, and SKILLS from disk and records the attempt to `log`. Returns
+/// `None` (keeping the caller's existing state untouched -- the "直前の正
+/// 常な設定を保持して復元" fallback) when the permission level, `.mcp.json`,
+/// or the persisted Ctx Agent config read fails, e.g. because a concurrent
+/// edit left it briefly malformed. SKILLS reload never fails this way -- a
+/// missing/unparseable skill file is just skipped (5.1's `load_skills` is
+/// fail-soft), so it always succeeds alongside the rest.
+///
+/// `ctx_overrides` re-applies this `chat` invocation's own
+/// `--ctx-trigger-threshold-pct`/`--ctx-target-size-pct` flags on top of
+/// whatever was just reloaded from disk, so a one-shot CLI override given at
+/// startup isn't silently dropped the first time the persisted config file
+/// changes underneath it.
 fn reload_chat_runtime<'a>(
     client: &'a ClaudeClient,
     store: &dyn PermissionStore,
     workspace: Option<&std::path::Path>,
     log: &dyn HotReloadLog,
-) -> Option<(PermissionLevel, ClaudeTaskExecutor<'a>)> {
+    ctx_overrides: (Option<u8>, Option<u8>),
+) -> Option<(PermissionLevel, ClaudeTaskExecutor<'a>, CtxAgentConfig)> {
     let level = match store.load() {
         Ok(level) => level,
         Err(e) => {
@@ -1375,12 +1471,33 @@ fn reload_chat_runtime<'a>(
         ));
         return None;
     }
+    let mut ctx_config = match agent::load_ctx_agent_config(workspace) {
+        Ok(config) => config,
+        Err(e) => {
+            let _ = log.record(ReloadEvent::now(
+                "ctx agent config",
+                false,
+                format!("failed to reload: {e}"),
+            ));
+            return None;
+        }
+    };
+    if let Some(pct) = ctx_overrides.0 {
+        ctx_config.trigger_threshold_pct = pct;
+    }
+    if let Some(pct) = ctx_overrides.1 {
+        ctx_config.target_size_pct = pct;
+    }
     let _ = log.record(ReloadEvent::now(
         "chat runtime",
         true,
-        "reloaded permission level and mcp config",
+        "reloaded permission level, mcp config, skills, and ctx agent config",
     ));
-    Some((level, build_chat_executor(client, workspace, level)))
+    Some((
+        level,
+        build_chat_executor(client, workspace, level),
+        ctx_config,
+    ))
 }
 
 fn chat(
@@ -1416,21 +1533,30 @@ fn chat(
 
     let mut executor = build_chat_executor(&client, workspace, permission_level);
     let hotreload_log = FileHotReloadLog::at(session::hotreload_log_path_for(workspace)?);
-    // 5.5: watches `.mcp.json` for filesystem changes so an edit made
+    let ctx_overrides = (
+        options.ctx_trigger_threshold_pct,
+        options.ctx_target_size_pct,
+    );
+    // 5.5: watches `.mcp.json`, the workspace's `skills/` directory, and the
+    // persisted Ctx Agent config for filesystem changes so an edit made
     // outside this process (or by another tool) is picked up without a
     // restart, not just the in-process `propose_extension` path below. A
     // watcher that fails to start (e.g. an unsupported platform backend)
     // only disables that filesystem-event path for this session -- the
     // immediate post-`propose_extension` reload still works regardless.
-    let config_watcher = hotreload::ConfigWatcher::watch(&[mcp::config_path(workspace)])
-        .inspect_err(|e| eprintln!("warning: hot reload file watcher unavailable: {e}"))
-        .ok();
+    let config_watcher = hotreload::ConfigWatcher::watch(&[
+        mcp::config_path(workspace),
+        skills::skills_dir(workspace),
+        agent::ctx_agent_config_path(workspace)?,
+    ])
+    .inspect_err(|e| eprintln!("warning: hot reload file watcher unavailable: {e}"))
+    .ok();
     let mut history: Vec<Message> = Vec::new();
-    let mut ctx_config = CtxAgentConfig::default();
-    if let Some(pct) = options.ctx_trigger_threshold_pct {
+    let mut ctx_config = agent::load_ctx_agent_config(workspace).unwrap_or_default();
+    if let Some(pct) = ctx_overrides.0 {
         ctx_config.trigger_threshold_pct = pct;
     }
-    if let Some(pct) = options.ctx_target_size_pct {
+    if let Some(pct) = ctx_overrides.1 {
         ctx_config.target_size_pct = pct;
     }
     let resume = options.resume;
@@ -1505,12 +1631,15 @@ fn chat(
         if config_watcher
             .as_ref()
             .is_some_and(hotreload::ConfigWatcher::poll_changed)
-            && let Some((new_level, new_executor)) =
-                reload_chat_runtime(&client, store, workspace, &hotreload_log)
+            && let Some((new_level, new_executor, new_ctx_config)) =
+                reload_chat_runtime(&client, store, workspace, &hotreload_log, ctx_overrides)
         {
             permission_level = new_level;
             executor = new_executor;
-            println!("(config change detected; permission level and Extensions reloaded)");
+            ctx_config = new_ctx_config;
+            println!(
+                "(config change detected; permission level, Extensions, skills, and ctx agent config reloaded)"
+            );
         }
 
         print!("> ");
@@ -1594,11 +1723,16 @@ fn chat(
                             AuditDecision::Allowed,
                         );
                         let reply = apply_proposed_extension(workspace, &proposal);
-                        if let Some((new_level, new_executor)) =
-                            reload_chat_runtime(&client, store, workspace, &hotreload_log)
-                        {
+                        if let Some((new_level, new_executor, new_ctx_config)) = reload_chat_runtime(
+                            &client,
+                            store,
+                            workspace,
+                            &hotreload_log,
+                            ctx_overrides,
+                        ) {
                             permission_level = new_level;
                             executor = new_executor;
+                            ctx_config = new_ctx_config;
                         }
                         reply
                     }
@@ -1619,11 +1753,18 @@ fn chat(
                                 AuditDecision::ConfirmedByUser,
                             );
                             let reply = apply_proposed_extension(workspace, &proposal);
-                            if let Some((new_level, new_executor)) =
-                                reload_chat_runtime(&client, store, workspace, &hotreload_log)
+                            if let Some((new_level, new_executor, new_ctx_config)) =
+                                reload_chat_runtime(
+                                    &client,
+                                    store,
+                                    workspace,
+                                    &hotreload_log,
+                                    ctx_overrides,
+                                )
                             {
                                 permission_level = new_level;
                                 executor = new_executor;
+                                ctx_config = new_ctx_config;
                             }
                             reply
                         } else {

@@ -13,16 +13,23 @@ pub struct Skill {
     pub path: PathBuf,
 }
 
+/// The directory a workspace's (or the global) SKILLS files are loaded
+/// from, exposed so callers that need to watch it for changes (5.5's
+/// hot reload) don't have to duplicate this layout decision.
+pub fn skills_dir(workspace: Option<&Path>) -> PathBuf {
+    match workspace {
+        Some(ws) => ws.join(".open-string").join(SKILLS_DIR),
+        None => PathBuf::from(SKILLS_DIR),
+    }
+}
+
 /// Loads every SKILLS-format Markdown file from a workspace's (or the
 /// global) `skills/` directory (5.1's "SKILLS形式の拡張機能読み込み機構").
 /// A file that fails to parse is skipped rather than failing the whole
 /// load -- the same fail-soft policy `load_connected_extensions` already
 /// uses for the Extension manifest.
 pub fn load_skills(workspace: Option<&Path>) -> Vec<Skill> {
-    let dir = match workspace {
-        Some(ws) => ws.join(".open-string").join(SKILLS_DIR),
-        None => PathBuf::from(SKILLS_DIR),
-    };
+    let dir = skills_dir(workspace);
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return Vec::new();
     };
