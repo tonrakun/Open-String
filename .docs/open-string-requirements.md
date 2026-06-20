@@ -304,8 +304,8 @@ Mediatorは常駐かつユーザーと長時間対話し続けるため、Sub Ag
 
 ### 6.1 対応OS
 - [x] Windows対応（ファーストターゲット、優先実装）（本セッションでWindows上で`cargo build --release`/`cargo test`/`cargo clippy`全通過、TUI/GUI/単一バイナリ配布を実機で動作確認済み）
-- [ ] macOS対応（セカンドターゲット）（コードはクロスプラットフォーム前提で実装済み（`cfg!(target_os)`分岐、`keyring`/`notify`/`tungstenite`/`tiny_http`はいずれもmacOS対応クレート）だが、実機/CI実行による確認はこのセッションでは未実施）
-- [ ] Linux対応（セカンドターゲット）（同上：実装はクロスプラットフォーム前提だが実機/CI実行による確認は未実施）
+- [x] macOS対応（セカンドターゲット）（GitHub Actions CI(run #27856275957, macos-latest)で`cargo build --release`/`cargo test`が成功）
+- [x] Linux対応（セカンドターゲット）（GitHub Actions CI(run #27856275957, ubuntu-latest)で`cargo build --release`/`cargo test`が成功）
 - [x] クロスコンパイル/CI構成（単一バイナリビルドをOSごとに自動生成）
 
 ### 6.2 性能・リソース
