@@ -256,9 +256,9 @@ Mediatorは常駐かつユーザーと長時間対話し続けるため、Sub Ag
 - [x] Ctx Agent自体の処理に失敗した場合のフェイルセーフ（要約失敗時にMediatorを強制終了させず、閾値到達前の状態を維持して再試行する等）（`compact`が`Err`を返した場合、`chat`は`history`を更新せず警告のみ出力して継続。次のターン終了後に閾値判定・再試行が自然に行われる、`src/main.rs`）
 
 #### 4.8 初回インストール時
-- [x] 初めてユーザーが本ソフトをインストールするときは環境に合わせたps1・shスクリプトを実行する（`scripts/install.ps1`（Windows）・`scripts/install.sh`（macOS/Linux）。リリースアーカイブ内で実行する前提のスタンドアロンスクリプト）
+- [x] 初めてユーザーが本ソフトをインストールするときは環境に合わせたps1・shスクリプトを実行する（`scripts/install.ps1`（Windows）・`scripts/install.sh`（macOS/Linux）。リリースアーカイブ内で実行する前提のスタンドアロンスクリプト。各ステップ（バイナリ検出・ディレクトリ作成・コピー・PATH追加・`--version`によるインストール後確認）を番号付き・色付きで表示し、完了時にインストール先とバージョンを要約表示する設計に強化）
 - [x] スクリプトはPATHの追加や必要なフォルダの作成等を自動で行う（インストール先ディレクトリ・Core設定ディレクトリを作成し、未登録の場合のみユーザーPATH（Windowsはレジストリ経由の永続PATH、Unixはshell rcファイル）に追記。冪等性を確認済み）
-- [x] これらのスクリプト郡はGitHub Actionsによって作られたReleaseに同袍して公開される（`.github/workflows/release.yml`。`v*`タグ push時にWindows/macOS/Linux向けにビルドし、各バイナリと対応するインストールスクリプトをzip/tar.gzに同梱してGitHub Releaseへ添付）
+- [x] これらのスクリプト郡はGitHub Actionsによって作られたReleaseに同袍して公開される（`.github/workflows/release.yml`。`v*`タグ push時にWindows/macOS/Linux向けにビルドし、各バイナリと対応するインストールスクリプトをzip/tar.gzに同梱してGitHub Releaseへ添付。さらにスクリプト単体（`install.ps1`/`install.sh`）もアーカイブとは別の単独アセットとしてReleaseに同封し、ダウンロード前に内容を確認できるようにした）
 
 ---
 

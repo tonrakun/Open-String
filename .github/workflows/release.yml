@@ -67,6 +67,7 @@ jobs:
         run: |
           mkdir -p release
           find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' \) -exec mv {} release/ \;
+          cp scripts/install.ps1 scripts/install.sh release/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
