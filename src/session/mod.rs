@@ -1,7 +1,7 @@
 mod registry;
 mod workspace;
 
-pub use registry::{FileSessionRegistry, SessionRegistry};
+pub use registry::{FileSessionRegistry, Session, SessionRegistry};
 pub use workspace::{FileWorkspaceRegistry, Workspace, WorkspaceRegistry};
 
 use std::path::{Path, PathBuf};

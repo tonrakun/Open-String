@@ -194,7 +194,10 @@ fn message_char_len(message: &Message) -> usize {
         .sum()
 }
 
-fn estimate_history_tokens(history: &[Message]) -> usize {
+/// Rough token estimate for a conversation history (4.3's "トークン消費状況"
+/// dashboard data needs the same estimate `should_compact` already uses, so
+/// the two stay consistent rather than drifting apart).
+pub fn estimate_history_tokens(history: &[Message]) -> usize {
     history.iter().map(message_char_len).sum::<usize>() / 4
 }
 

@@ -169,14 +169,14 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 
 ### 4.3 TUI / GUI
 
-- [ ] TUI：初期セットアップウィザード
-- [ ] TUI：設定変更画面（権限レベル、Extension管理、認証管理）
-- [ ] TUI：ダッシュボード（セッション一覧、ワークスペース状態、トークン消費状況、ヘルスチェック結果）
-- [ ] GUI：初期セットアップウィザード（TUIと機能等価）
-- [ ] GUI：設定変更画面（TUIと機能等価）
-- [ ] GUI：ダッシュボード（TUIと機能等価、グラフィカルなトークン消費可視化を含む）
-- [ ] TUI/GUI共通：操作ログのリアルタイム表示
-- [ ] TUI/GUI共通：危険操作確認ダイアログのレンダリング
+- [x] TUI：初期セットアップウィザード（`src/tui.rs`：APIキー入力→権限レベル選択→ワークスペース作成の3ステップ。`open-string tui`）
+- [x] TUI：設定変更画面（権限レベル、Extension管理、認証管理）（`p`で権限レベル循環、`e`/`x`でExtension有効化・削除、`l`でログアウト。いずれも`dashboard::requires_confirmation`で危険操作判定）
+- [x] TUI：ダッシュボード（セッション一覧、ワークスペース状態、トークン消費状況、ヘルスチェック結果）（`dashboard::gather`を共通データソースに使用）
+- [x] GUI：初期セットアップウィザード（TUIと機能等価）（`src/gui.rs`+`src/gui/index.html`：ローカルHTTPサーバーを起動しブラウザでセットアップ画面を開く。`open-string gui`）
+- [x] GUI：設定変更画面（TUIと機能等価）（同じ`dashboard`モジュール経由でTUIと同一の権限レベル/Extension/認証操作をWeb UIから実行）
+- [x] GUI：ダッシュボード（TUIと機能等価、グラフィカルなトークン消費可視化を含む）（CSSバーによるトークン消費ゲージ、2秒ポーリングで自動更新）
+- [x] TUI/GUI共通：操作ログのリアルタイム表示（`dashboard::gather`が`FileAuditLogger`の直近ログをtailし、TUI/GUI双方が定期再取得して表示）
+- [x] TUI/GUI共通：危険操作確認ダイアログのレンダリング（`dashboard::requires_confirmation`+`PendingAction`/`apply_pending_action`を共通化。TUIはオーバーレイ、GUIはモーダルで同じ確認フローをレンダリング）
 
 ### 4.4 チャット連携ゲートウェイ
 

@@ -59,6 +59,12 @@ impl FileAuditLogger {
             path: dir.join("audit.log"),
         })
     }
+
+    /// Exposes the backing log file path for readers outside this module
+    /// (4.3's "操作ログのリアルタイム表示" dashboard data).
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
 }
 
 impl AuditLogger for FileAuditLogger {

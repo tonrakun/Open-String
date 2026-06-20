@@ -1,5 +1,7 @@
 mod agent;
 mod auth;
+mod dashboard;
+mod gui;
 mod health;
 mod hotreload;
 mod llm;
@@ -8,6 +10,7 @@ mod permission;
 mod prompt;
 mod session;
 mod skills;
+mod tui;
 
 use agent::{
     ClaudeTaskExecutor, CliConfirmationPrompt, ConfirmationPrompt, CtxAgentConfig, DispatchError,
@@ -18,6 +21,7 @@ use agent::{
 };
 use auth::{AnthropicApiKeyProvider, AuthProvider, validate_api_key_format};
 use clap::{Parser, Subcommand};
+use dashboard::MEDIATOR_CONTEXT_WINDOW_TOKENS;
 use hotreload::{FileHotReloadLog, HotReloadLog, ReloadEvent};
 use llm::{ClaudeClient, Message};
 use permission::{
@@ -100,13 +104,20 @@ enum Command {
         #[arg(long)]
         resume: Option<u64>,
     },
+    /// Launch the interactive terminal UI (4.3): setup wizard, settings
+    /// (permission level/Extensions/auth), and a live dashboard
+    Tui {
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Launch the local-web GUI (4.3): opens a dashboard/settings/setup
+    /// page in the system's default browser, functionally equivalent to
+    /// `tui`
+    Gui {
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
 }
-
-/// Claude Sonnet 4.6's context window, used to evaluate the Ctx Agent's
-/// percentage-based trigger and target thresholds (4.7.5). Core has no
-/// Models API call wired in to look this up at runtime (4.2.4), so it is
-/// hardcoded alongside `llm::client::DEFAULT_MODEL`.
-const MEDIATOR_CONTEXT_WINDOW_TOKENS: usize = 1_000_000;
 
 #[derive(Subcommand)]
 enum AuthAction {
@@ -481,6 +492,14 @@ fn main() {
                     },
                 )
             })
+        }
+        Command::Tui { workspace } => {
+            let workspace = resolve_workspace(workspace);
+            tui::run(workspace.as_deref())
+        }
+        Command::Gui { workspace } => {
+            let workspace = resolve_workspace(workspace);
+            gui::run(workspace.as_deref())
         }
     };
 

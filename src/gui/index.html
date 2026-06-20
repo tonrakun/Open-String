@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Open String</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161922;
+    --panel-border: #262b38;
+    --text: #e6e9f0;
+    --muted: #8b93a7;
+    --accent: #5b8cff;
+    --ok: #3ddc97;
+    --warn: #f5c451;
+    --fatal: #ff5d6c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  header h1 { font-size: 1.1rem; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+  nav { display: flex; gap: 0.5rem; }
+  nav button {
+    background: transparent;
+    border: 1px solid var(--panel-border);
+    color: var(--muted);
+    padding: 0.4rem 0.9rem;
+    border-radius: 999px;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  nav button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  main { padding: 1.5rem; max-width: 1100px; margin: 0 auto; }
+  .grid { display: grid; gap: 1rem; }
+  .grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+  .grid.cols-2 { grid-template-columns: 2fr 1fr; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 12px;
+    padding: 1rem;
+  }
+  .panel h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 0.75rem; }
+  .panel ul { list-style: none; margin: 0; padding: 0; max-height: 240px; overflow-y: auto; }
+  .panel li { padding: 0.35rem 0; border-bottom: 1px solid var(--panel-border); font-size: 0.85rem; }
+  .panel li:last-child { border-bottom: none; }
+  .bar-track { background: #20242f; border-radius: 999px; height: 10px; overflow: hidden; }
+  .bar-fill { background: var(--accent); height: 100%; transition: width 0.3s ease; }
+  .muted { color: var(--muted); }
+  .sev-fatal { color: var(--fatal); }
+  .sev-warning { color: var(--warn); }
+  .sev-info { color: var(--ok); }
+  .log { font-family: ui-monospace, Consolas, monospace; font-size: 0.75rem; white-space: pre-wrap; word-break: break-all; }
+  .btn {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  .btn.secondary { background: transparent; border: 1px solid var(--panel-border); color: var(--text); }
+  .btn.danger { background: var(--fatal); }
+  input[type=text], input[type=password] {
+    background: #0f1115;
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 0.5rem 0.7rem;
+    font-size: 0.9rem;
+    width: 100%;
+  }
+  .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  td, th { padding: 0.4rem 0.3rem; border-bottom: 1px solid var(--panel-border); text-align: left; }
+  .status-msg { margin-top: 0.75rem; font-size: 0.85rem; color: var(--accent); }
+  .hidden { display: none !important; }
+  .overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal {
+    background: var(--panel); border: 1px solid var(--warn); border-radius: 12px;
+    padding: 1.5rem; max-width: 420px;
+  }
+  .modal h3 { margin: 0 0 0.75rem; color: var(--warn); }
+  .step { max-width: 480px; }
+  .step .panel { margin-bottom: 1rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Open String</h1>
+  <nav id="nav">
+    <button data-tab="dashboard">Dashboard</button>
+    <button data-tab="settings">Settings</button>
+    <button data-tab="setup">Setup</button>
+  </nav>
+</header>
+
+<main>
+  <section id="tab-dashboard" class="hidden">
+    <div class="panel" style="margin-bottom:1rem">
+      <h2>Token consumption</h2>
+      <div class="bar-track"><div id="token-bar" class="bar-fill" style="width:0%"></div></div>
+      <div id="token-label" class="muted" style="margin-top:0.4rem;font-size:0.8rem"></div>
+    </div>
+    <div class="grid cols-3" style="margin-bottom:1rem">
+      <div class="panel"><h2>Sessions</h2><ul id="sessions"></ul></div>
+      <div class="panel"><h2>Workspaces</h2><ul id="workspaces"></ul></div>
+      <div class="panel"><h2>Health check</h2><ul id="health"></ul></div>
+    </div>
+    <div class="panel">
+      <h2>Operation log (live)</h2>
+      <ul id="log" class="log"></ul>
+    </div>
+  </section>
+
+  <section id="tab-settings" class="hidden">
+    <div class="panel" style="margin-bottom:1rem">
+      <h2>Account</h2>
+      <p>Permission level: <strong id="current-level"></strong></p>
+      <div class="row" id="level-buttons"></div>
+      <p style="margin-top:1rem">Anthropic API key: <span id="auth-status"></span></p>
+      <button class="btn secondary" id="logout-btn">Log out</button>
+    </div>
+    <div class="panel" style="margin-bottom:1rem">
+      <h2>Extensions</h2>
+      <table>
+        <thead><tr><th>Name</th><th>Command</th><th>State</th><th></th></tr></thead>
+        <tbody id="extensions"></tbody>
+      </table>
+    </div>
+    <div class="panel">
+      <h2>SKILLS</h2>
+      <ul id="skills"></ul>
+    </div>
+    <div id="settings-status" class="status-msg"></div>
+  </section>
+
+  <section id="tab-setup" class="hidden step">
+    <div class="panel">
+      <h2>1. Anthropic API key</h2>
+      <input type="password" id="setup-api-key" placeholder="sk-ant-..." />
+      <div class="row" style="margin-top:0.75rem"><button class="btn" id="setup-api-key-btn">Save key</button></div>
+    </div>
+    <div class="panel">
+      <h2>2. Default permission level</h2>
+      <div class="row" id="setup-level-buttons"></div>
+    </div>
+    <div class="panel">
+      <h2>3. Workspace (optional)</h2>
+      <input type="text" id="setup-workspace-path" placeholder="Workspace path" style="margin-bottom:0.5rem" />
+      <input type="text" id="setup-workspace-name" placeholder="Workspace name (optional)" />
+      <div class="row" style="margin-top:0.75rem"><button class="btn" id="setup-workspace-btn">Create / skip</button></div>
+    </div>
+    <div id="setup-status" class="status-msg"></div>
+  </section>
+</main>
+
+<div id="overlay" class="overlay hidden">
+  <div class="modal">
+    <h3>Confirm dangerous operation</h3>
+    <p id="modal-summary"></p>
+    <div class="row">
+      <button class="btn danger" id="modal-confirm">Confirm</button>
+      <button class="btn secondary" id="modal-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const LEVELS = ["god-mode", "low-security", "middle-permission", "high-protect"];
+let activeTab = "dashboard";
+let lastPendingId = null;
+
+function showTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+  ["dashboard", "settings", "setup"].forEach(t => {
+    document.getElementById(`tab-${t}`).classList.toggle("hidden", t !== tab);
+  });
+}
+document.querySelectorAll("#nav button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
+
+function levelButtons(container, onClick) {
+  container.innerHTML = "";
+  LEVELS.forEach(level => {
+    const btn = document.createElement("button");
+    btn.className = "btn secondary";
+    btn.textContent = level;
+    btn.addEventListener("click", () => onClick(level));
+    container.appendChild(btn);
+  });
+}
+
+async function post(path, body) {
+  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  return res.json();
+}
+
+function maybeShowModal(result) {
+  if (result && result.pending) {
+    lastPendingId = result.id;
+    document.getElementById("modal-summary").textContent = result.summary;
+    document.getElementById("overlay").classList.remove("hidden");
+    return true;
+  }
+  return false;
+}
+
+document.getElementById("modal-confirm").addEventListener("click", async () => {
+  const r = await post("/api/confirm", { id: lastPendingId, confirm: true });
+  document.getElementById("overlay").classList.add("hidden");
+  document.getElementById("settings-status").textContent = r.message || "";
+  refresh();
+});
+document.getElementById("modal-cancel").addEventListener("click", async () => {
+  await post("/api/confirm", { id: lastPendingId, confirm: false });
+  document.getElementById("overlay").classList.add("hidden");
+  refresh();
+});
+
+levelButtons(document.getElementById("setup-level-buttons"), async (level) => {
+  const r = await post("/api/setup/permission", { level });
+  document.getElementById("setup-status").textContent = r.message;
+});
+
+document.getElementById("setup-api-key-btn").addEventListener("click", async () => {
+  const apiKey = document.getElementById("setup-api-key").value.trim();
+  const r = await post("/api/setup/api-key", { apiKey });
+  document.getElementById("setup-status").textContent = r.message;
+  if (r.ok) document.getElementById("setup-api-key").value = "";
+  refresh();
+});
+
+document.getElementById("setup-workspace-btn").addEventListener("click", async () => {
+  const path = document.getElementById("setup-workspace-path").value.trim();
+  const name = document.getElementById("setup-workspace-name").value.trim();
+  const r = await post("/api/setup/workspace", { path, name });
+  document.getElementById("setup-status").textContent = r.message;
+  refresh();
+});
+
+document.getElementById("logout-btn").addEventListener("click", async () => {
+  const r = await post("/api/settings/logout", {});
+  if (!maybeShowModal(r)) {
+    document.getElementById("settings-status").textContent = r.message;
+    refresh();
+  }
+});
+
+function renderLevelChoice() {
+  levelButtons(document.getElementById("level-buttons"), async (level) => {
+    const r = await post("/api/settings/permission", { level });
+    if (!maybeShowModal(r)) {
+      document.getElementById("settings-status").textContent = r.message;
+      refresh();
+    }
+  });
+}
+renderLevelChoice();
+
+function renderExtensions(extensions) {
+  const tbody = document.getElementById("extensions");
+  tbody.innerHTML = "";
+  extensions.forEach(ext => {
+    const tr = document.createElement("tr");
+    const requirement = ext.requiredPermissionLevel ? ` (requires ${ext.requiredPermissionLevel})` : "";
+    tr.innerHTML = `<td>${ext.name}</td><td class="muted">${ext.command} ${ext.args.join(" ")}${requirement}</td><td>${ext.enabled ? "enabled" : "disabled"}</td><td></td>`;
+    const actions = document.createElement("td");
+    const toggleBtn = document.createElement("button");
+    toggleBtn.className = "btn secondary";
+    toggleBtn.textContent = ext.enabled ? "Disable" : "Enable";
+    toggleBtn.addEventListener("click", async () => {
+      const r = await post("/api/settings/extension", { name: ext.name, enabled: !ext.enabled });
+      if (!maybeShowModal(r)) { document.getElementById("settings-status").textContent = r.message; refresh(); }
+    });
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "btn danger";
+    removeBtn.style.marginLeft = "0.4rem";
+    removeBtn.textContent = "Remove";
+    removeBtn.addEventListener("click", async () => {
+      const r = await post("/api/settings/extension/remove", { name: ext.name });
+      if (!maybeShowModal(r)) { document.getElementById("settings-status").textContent = r.message; refresh(); }
+    });
+    tr.lastElementChild.appendChild(toggleBtn);
+    tr.lastElementChild.appendChild(removeBtn);
+    tbody.appendChild(tr);
+  });
+}
+
+function li(text, className) {
+  const el = document.createElement("li");
+  if (className) el.className = className;
+  el.textContent = text;
+  return el;
+}
+
+async function refresh() {
+  const state = await (await fetch("/api/state")).json();
+
+  document.getElementById("current-level").textContent = state.permissionLevel;
+  document.getElementById("auth-status").textContent = state.authConfigured ? "configured" : "not configured";
+
+  const usage = state.tokenUsage;
+  document.getElementById("token-bar").style.width = `${usage ? usage.percent : 0}%`;
+  document.getElementById("token-label").textContent = usage ? `${usage.used} / ${usage.window} tokens (${usage.percent}%)` : "no active session";
+
+  const sessions = document.getElementById("sessions");
+  sessions.innerHTML = "";
+  state.sessions.forEach(s => sessions.appendChild(li(`#${s.id} ${s.label || ""} [${s.active ? "active" : "ended"}]`)));
+
+  const workspaces = document.getElementById("workspaces");
+  workspaces.innerHTML = "";
+  if (state.workspaces.length === 0) workspaces.appendChild(li("(no workspaces registered)", "muted"));
+  state.workspaces.forEach(w => workspaces.appendChild(li(`${w.current ? "* " : ""}${w.name} (${w.path})`)));
+
+  const health = document.getElementById("health");
+  health.innerHTML = "";
+  state.health.forEach(item => health.appendChild(li(`[${item.severity.toUpperCase()}] ${item.name}: ${item.message}`, `sev-${item.severity}`)));
+
+  const log = document.getElementById("log");
+  log.innerHTML = "";
+  state.recentAuditLog.slice().reverse().forEach(line => log.appendChild(li(line)));
+
+  renderExtensions(state.extensions);
+
+  const skills = document.getElementById("skills");
+  skills.innerHTML = "";
+  state.skills.forEach(s => skills.appendChild(li(`${s.name}: ${s.description}`)));
+
+  if (state.pendingConfirmation && lastPendingId === null) {
+    lastPendingId = state.pendingConfirmation.id;
+    document.getElementById("modal-summary").textContent = state.pendingConfirmation.summary;
+    document.getElementById("overlay").classList.remove("hidden");
+  }
+
+  showTab(state.authConfigured ? (activeTab === "setup" ? "setup" : activeTab) : "setup");
+}
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
