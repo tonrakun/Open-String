@@ -38,7 +38,18 @@ use std::io::Write;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "open-string", version, about = "Open String Core CLI")]
+#[command(
+    name = "open-string",
+    version,
+    about = "Open String Core CLI",
+    after_help = "Quickstart:\n  \
+                  open-string auth login                    Store your Anthropic API key\n  \
+                  open-string workspace create ./my-project  Register a workspace\n  \
+                  open-string workspace switch ./my-project  Make it the default\n  \
+                  open-string chat                           Start talking to the Mediator\n\n\
+                  Or run `open-string tui` / `open-string gui` for a guided setup wizard \
+                  covering the same three steps."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
