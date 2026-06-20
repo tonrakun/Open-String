@@ -180,7 +180,7 @@ pub fn run<G: ChatGateway>(
     workspace: Option<&Path>,
     config: GatewayConfig,
 ) -> Result<(), String> {
-    let provider = crate::auth::AnthropicApiKeyProvider::new();
+    let provider = crate::auth::AnthropicApiKeyProvider::for_workspace(workspace);
     let client = crate::claude_client_from_stored_key(&provider)?;
     let configured_level = crate::permission_store_for(workspace)?
         .load()

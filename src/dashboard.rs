@@ -80,7 +80,7 @@ pub fn gather(workspace: Option<&Path>) -> DashboardSnapshot {
         })
         .unwrap_or_default();
 
-    let auth_configured = AnthropicApiKeyProvider::new()
+    let auth_configured = AnthropicApiKeyProvider::for_workspace(workspace)
         .load()
         .map(|stored| stored.is_some())
         .unwrap_or(false);
@@ -238,7 +238,7 @@ pub fn apply_pending_action(workspace: Option<&Path>, action: PendingAction) -> 
             Ok(()) => format!("Extension \"{name}\" removed."),
             Err(e) => format!("Failed to remove \"{name}\": {e}"),
         },
-        PendingAction::Logout => match AnthropicApiKeyProvider::new().clear() {
+        PendingAction::Logout => match AnthropicApiKeyProvider::for_workspace(workspace).clear() {
             Ok(()) => "Logged out.".to_string(),
             Err(e) => format!("Failed to log out: {e}"),
         },

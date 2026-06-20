@@ -133,11 +133,23 @@ enum AuthAction {
         /// API key value. If omitted, you will be prompted (input hidden).
         #[arg(long)]
         api_key: Option<String>,
+        /// Store this key for this workspace only, instead of the global
+        /// default (4.5)
+        #[arg(long)]
+        workspace: Option<PathBuf>,
     },
     /// Show whether an API key is currently stored
-    Status,
+    Status {
+        /// Check this workspace's override instead of the global default
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
     /// Remove the stored API key
-    Logout,
+    Logout {
+        /// Remove this workspace's override instead of the global default
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -390,7 +402,6 @@ enum GatewayAction {
 
 fn main() {
     let cli = Cli::parse();
-    let provider = AnthropicApiKeyProvider::new();
     let permission_store = match FilePermissionStore::new() {
         Ok(store) => store,
         Err(e) => {
@@ -413,9 +424,21 @@ fn main() {
 
     let result = match cli.command {
         Command::Auth { action } => match action {
-            AuthAction::Login { api_key } => login(&provider, api_key),
-            AuthAction::Status => status(&provider),
-            AuthAction::Logout => logout(&provider),
+            AuthAction::Login { api_key, workspace } => {
+                let workspace = resolve_workspace(workspace);
+                login(
+                    &AnthropicApiKeyProvider::for_workspace(workspace.as_deref()),
+                    api_key,
+                )
+            }
+            AuthAction::Status { workspace } => {
+                let workspace = resolve_workspace(workspace);
+                status(&AnthropicApiKeyProvider::for_workspace(workspace.as_deref()))
+            }
+            AuthAction::Logout { workspace } => {
+                let workspace = resolve_workspace(workspace);
+                logout(&AnthropicApiKeyProvider::for_workspace(workspace.as_deref()))
+            }
         },
         Command::Permission { action } => match action {
             PermissionAction::Status { workspace } => {
@@ -444,7 +467,7 @@ fn main() {
                     run_task(
                         store.as_ref(),
                         &audit_logger,
-                        &provider,
+                        &AnthropicApiKeyProvider::for_workspace(workspace.as_deref()),
                         description,
                         read_only,
                         workspace.as_deref(),
@@ -462,7 +485,7 @@ fn main() {
                     run_tasks(
                         store.as_ref(),
                         &audit_logger,
-                        &provider,
+                        &AnthropicApiKeyProvider::for_workspace(workspace.as_deref()),
                         descriptions,
                         read_only,
                         max_parallel,
@@ -561,7 +584,7 @@ fn main() {
                 chat(
                     store.as_ref(),
                     &audit_logger,
-                    &provider,
+                    &AnthropicApiKeyProvider::for_workspace(workspace.as_deref()),
                     workspace.as_deref(),
                     ChatOptions {
                         max_parallel,

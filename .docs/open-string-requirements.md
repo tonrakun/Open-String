@@ -150,9 +150,9 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 - [x] セッション一覧・現在状態のダッシュボード表示用データ提供（`open-string session list`が各セッションのid/label/開始時刻/active状態を構造化して出力。`SessionRegistry::list`がそのままTUI/GUIダッシュボード（4.3）からも呼び出せる）
 
 #### 4.2.4 t0k3n-mcpとの責務分担（明確化）
-- [ ] Core側はt0k3n-mcpがカバーする「ファイル/コード読み込みのトークン削減」には介入しない（重複実装を避ける）
-- [ ] Core側が担うのは：システムプロンプト構築、会話履歴管理、マルチワークスペース管理、Extension応答の圧縮
-- [ ] t0k3n-mcp不在時のフォールバック（簡易skeleton抽出ロジックをCore内に最低限保持するかは検討事項。4.2.5参照）
+- [x] Core側はt0k3n-mcpがカバーする「ファイル/コード読み込みのトークン削減」には介入しない（重複実装を避ける）（`src/agent/bundled_extensions.rs`がt0k3n-mcp接続時に`read_code_skeleton`等の使用をシステムプロンプトへ案内するのみで、Core自身はskeleton抽出やコード読み込みのトークン削減ロジックを一切実装しない）
+- [x] Core側が担うのは：システムプロンプト構築、会話履歴管理、マルチワークスペース管理、Extension応答の圧縮（`src/agent/system_prompt.rs`（システムプロンプト構築）・`src/agent/ctx_agent.rs`の`compact`/`clear_stale_tool_results`（会話履歴管理・ツール結果圧縮）・`src/session/`（マルチワークスペース管理）・`gateway::compress_for_chat`（チャット応答の長文圧縮））
+- [x] t0k3n-mcp不在時のフォールバック（簡易skeleton抽出ロジックをCore内に最低限保持するかは検討事項。4.2.5参照）（検討の結果、Core内にskeleton抽出の重複実装は持たない方針とした。t0k3n-mcp不在時は`agent::tools::read_file_tool`（常駐の素朴な全文読み込みツール）のみにフォールバックし、トークン削減自体はt0k3n-mcp接続時のみの最適化として明確に切り分ける）
 
 #### 4.2.5 外部Extensionのライフサイクル管理（新規要件）
 - [x] 新規ワークスペース作成時に対応Extensionの自動セットアップを実行する仕組み（例：t0k3n-mcpの`setup`相当コマンドを自動実行）（`mcp::setup_workspace_extensions`、`src/mcp/lifecycle.rs`。`workspace create`実行直後に設定済みの全Extensionへ接続スモークテストを実行し結果を表示。MCPプロトコル自体に`setup`相当のRPCは存在しないため、接続可否の検証として実装）
@@ -193,7 +193,7 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 
 - [x] ワークスペースの作成・削除・切り替え（`open-string workspace create/list/remove/switch/status`、`FileWorkspaceRegistry`、`src/session/workspace.rs`。`switch`で設定したcurrentワークスペースは`--workspace`省略時のデフォルトとして`chat`/`agent`/`permission`系コマンドに反映される）
 - [x] セッションの作成・一覧・終了（`open-string session list/end`、`FileSessionRegistry`、`src/session/registry.rs`。`chat`が起動時にセッションを開始し終了時に終了する）
-- [ ] ワークスペースごとの設定（権限レベル、有効Extension、認証プロバイダ）の個別管理（権限レベルは`WorkspacePermissionStore`で個別管理済みだが、有効Extension・認証プロバイダのワークスペース別設定は未実装。5.1/5.3のExtension基盤実装時に対応予定）
+- [x] ワークスペースごとの設定（権限レベル、有効Extension、認証プロバイダ）の個別管理（権限レベルは`WorkspacePermissionStore`、有効Extensionは`McpConfig::config_path`がワークスペース直下の`.mcp.json`を個別に読み書きすることで、それぞれ個別管理済み。認証プロバイダは`AnthropicApiKeyProvider::for_workspace`がワークスペースのパスから導出したkeyringエントリ名で個別保存し、未設定時はグローバルエントリへフォールバックする（6.3の平文秘匿情報禁止のためファイルではなくOSの認証情報ストアを使用）。CLI(`auth login/status/logout --workspace`)・TUI・GUI・チャットゲートウェイの全呼び出し箇所で適用）
 - [x] セッション状態の永続化（snapshot/restore機構、4.2.2と連携）（`chat`が各ターン後に`FileMemoryStore::save_history`でセッション単位のスナップショットを保存し、`--resume <session-id>`で`FileMemoryStore::load_latest`から最新スナップショットを復元して会話を再開できる）
 
 ### 4.6 セルフヘルスチェック・自己修復（新規要件）

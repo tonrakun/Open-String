@@ -227,12 +227,15 @@ fn handle_key(app: &mut App, key: KeyCode) {
 }
 
 fn handle_setup_key(app: &mut App, key: KeyCode) {
+    let workspace = app.workspace.clone();
     let setup = &mut app.setup;
     match setup.step {
         SetupStep::ApiKey => match key {
             KeyCode::Enter => {
                 if validate_api_key_format(&setup.api_key_input) {
-                    match AnthropicApiKeyProvider::new().store(&setup.api_key_input) {
+                    match AnthropicApiKeyProvider::for_workspace(workspace.as_deref())
+                        .store(&setup.api_key_input)
+                    {
                         Ok(()) => {
                             setup.api_key_input.clear();
                             setup.step = SetupStep::PermissionLevel;

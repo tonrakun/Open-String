@@ -89,7 +89,7 @@ fn route(method: &str, url: &str, body: &Value, state: &GuiState) -> (u16, &'sta
     match (method, url) {
         ("GET", "/") => (200, "text/html; charset=utf-8", INDEX_HTML.to_string()),
         ("GET", "/api/state") => (200, "application/json", snapshot_json(state).to_string()),
-        ("POST", "/api/setup/api-key") => json_response(setup_api_key(body)),
+        ("POST", "/api/setup/api-key") => json_response(setup_api_key(state, body)),
         ("POST", "/api/setup/permission") => json_response(setup_permission(state, body)),
         ("POST", "/api/setup/workspace") => json_response(setup_workspace(state, body)),
         ("POST", "/api/settings/permission") => json_response(settings_permission(state, body)),
@@ -178,14 +178,14 @@ fn str_field<'a>(body: &'a Value, field: &str) -> Option<&'a str> {
     body.get(field).and_then(Value::as_str)
 }
 
-fn setup_api_key(body: &Value) -> Value {
+fn setup_api_key(state: &GuiState, body: &Value) -> Value {
     let Some(api_key) = str_field(body, "apiKey") else {
         return json!({"ok": false, "message": "missing apiKey"});
     };
     if !validate_api_key_format(api_key) {
         return json!({"ok": false, "message": "that doesn't look like a valid Anthropic API key"});
     }
-    match AnthropicApiKeyProvider::new().store(api_key) {
+    match AnthropicApiKeyProvider::for_workspace(state.workspace.as_deref()).store(api_key) {
         Ok(()) => json!({"ok": true, "message": "API key stored."}),
         Err(e) => json!({"ok": false, "message": format!("failed to store API key: {e}")}),
     }
