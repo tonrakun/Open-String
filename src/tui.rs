@@ -15,10 +15,10 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Gauge, List, ListItem, Paragraph};
 use std::io::Stdout;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -31,6 +31,123 @@ const PERMISSION_LEVELS: [PermissionLevel; 4] = [
 ];
 
 const SNAPSHOT_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Calm cyan/gray theme shared by every screen: cyan marks the active
+/// element, dark gray recedes, and red/yellow/green stay reserved for
+/// genuine severity signals (danger level, health checks).
+const ACCENT: Color = Color::Cyan;
+const MUTED: Color = Color::DarkGray;
+const SUCCESS: Color = Color::Green;
+const DANGER: Color = Color::Red;
+const WARNING: Color = Color::Yellow;
+
+/// A panel with a rounded, muted border and an accent-colored title --
+/// the baseline chrome for every bordered block outside the setup wizard's
+/// current step.
+fn panel(title: &str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(MUTED))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ))
+}
+
+/// Same chrome as `panel`, but with an accent-colored border to mark the
+/// one focused/active region on screen (the wizard's current step).
+fn panel_focused(title: &str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ))
+}
+
+fn level_color(level: PermissionLevel) -> Color {
+    match level {
+        PermissionLevel::GodMode => DANGER,
+        PermissionLevel::LowSecurity => WARNING,
+        PermissionLevel::MiddlePermission => ACCENT,
+        PermissionLevel::HighProtect => SUCCESS,
+    }
+}
+
+fn level_description(level: PermissionLevel) -> &'static str {
+    match level {
+        PermissionLevel::GodMode => "All operations allowed, no confirmation. Not recommended.",
+        PermissionLevel::LowSecurity => {
+            "Most operations allowed; irreversible actions need confirmation."
+        }
+        PermissionLevel::MiddlePermission => {
+            "Directory/command whitelist; anything outside it needs confirmation."
+        }
+        PermissionLevel::HighProtect => {
+            "Nearly every operation needs confirmation. Safest default."
+        }
+    }
+}
+
+fn header_lines() -> Vec<Line<'static>> {
+    vec![
+        Line::from(Span::styled(
+            "OPEN STRING",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "secure multi-agent assistant -- first-time setup",
+            Style::default().fg(MUTED),
+        )),
+    ]
+}
+
+/// Renders the 3-step wizard progress as `1 API Key › 2 Permission › 3
+/// Workspace`, marking completed steps with a green check and the current
+/// step in reversed accent. `Done` reports every step complete.
+fn step_indicator(current: SetupStep) -> Line<'static> {
+    const STEPS: [(SetupStep, &str); 3] = [
+        (SetupStep::ApiKey, "API Key"),
+        (SetupStep::PermissionLevel, "Permission"),
+        (SetupStep::Workspace, "Workspace"),
+    ];
+    let order = |s: SetupStep| match s {
+        SetupStep::ApiKey => 0,
+        SetupStep::PermissionLevel => 1,
+        SetupStep::Workspace => 2,
+        SetupStep::Done => 3,
+    };
+    let current_idx = order(current);
+    let mut spans = Vec::new();
+    for (i, (step, label)) in STEPS.iter().enumerate() {
+        let idx = order(*step);
+        if idx < current_idx {
+            spans.push(Span::styled(
+                format!(" ✓ {label} "),
+                Style::default().fg(SUCCESS),
+            ));
+        } else if idx == current_idx {
+            spans.push(Span::styled(
+                format!(" {} {label} ", i + 1),
+                Style::default()
+                    .fg(ACCENT)
+                    .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            ));
+        } else {
+            spans.push(Span::styled(
+                format!(" {} {label} ", i + 1),
+                Style::default().fg(MUTED),
+            ));
+        }
+        if i + 1 < STEPS.len() {
+            spans.push(Span::styled(" › ", Style::default().fg(MUTED)));
+        }
+    }
+    Line::from(spans)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -410,18 +527,25 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 fn draw_confirm_dialog(frame: &mut ratatui::Frame, dialog: &ConfirmDialog) {
     let area = centered_rect(60, 30, frame.area());
     let block = Block::default()
-        .title(" Confirm dangerous operation ")
+        .title(Span::styled(
+            " Confirm dangerous operation ",
+            Style::default().fg(WARNING).add_modifier(Modifier::BOLD),
+        ))
         .borders(Borders::ALL)
-        .style(Style::default().fg(Color::Yellow));
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(WARNING));
     let text = vec![
         Line::from(dialog.summary.clone()),
         Line::from(""),
         Line::from(vec![
-            Span::styled("y", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "y",
+                Style::default().fg(SUCCESS).add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" = confirm   "),
             Span::styled(
                 "any other key",
-                Style::default().add_modifier(Modifier::BOLD),
+                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
             ),
             Span::raw(" = decline"),
         ]),
@@ -433,60 +557,139 @@ fn draw_setup(frame: &mut ratatui::Frame, app: &App) {
     let area = frame.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(2)])
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(area);
 
-    let body = match app.setup.step {
-        SetupStep::ApiKey => Paragraph::new(vec![
-            Line::from("Open String setup -- step 1/3: Anthropic API key"),
-            Line::from(""),
-            Line::from(format!("> {}", "*".repeat(app.setup.api_key_input.len()))),
-            Line::from(""),
-            Line::from("Paste your API key and press Enter."),
-        ]),
-        SetupStep::PermissionLevel => {
-            let lines: Vec<Line> = PERMISSION_LEVELS
-                .iter()
-                .enumerate()
-                .map(|(i, level)| {
-                    let marker = if i == app.setup.level_index {
-                        "> "
-                    } else {
-                        "  "
-                    };
-                    Line::from(format!("{marker}{level}"))
-                })
-                .collect();
-            let mut text = vec![
-                Line::from("Open String setup -- step 2/3: default permission level"),
-                Line::from(""),
-            ];
-            text.extend(lines);
-            text.push(Line::from(""));
-            text.push(Line::from("Up/Down to choose, Enter to confirm."));
-            Paragraph::new(text)
-        }
-        SetupStep::Workspace => Paragraph::new(vec![
-            Line::from("Open String setup -- step 3/3: workspace (optional)"),
-            Line::from(""),
-            Line::from(format!("path: {}", app.setup.workspace_path_input)),
-            Line::from(format!("name: {}", app.setup.workspace_name_input)),
-            Line::from(""),
-            Line::from(
-                "Tab to switch field, Enter to create (or leave path empty to skip), Esc to skip.",
-            ),
-        ]),
-        SetupStep::Done => Paragraph::new(vec![
-            Line::from("Setup complete."),
-            Line::from(""),
-            Line::from("Press any key to open the dashboard."),
-        ]),
-    };
     frame.render_widget(
-        body.block(Block::default().borders(Borders::ALL)),
+        Paragraph::new(header_lines()).alignment(Alignment::Center),
         chunks[0],
     );
-    frame.render_widget(Paragraph::new(app.status.clone()), chunks[1]);
+    frame.render_widget(
+        Paragraph::new(step_indicator(app.setup.step)).alignment(Alignment::Center),
+        chunks[1],
+    );
+
+    let body = match app.setup.step {
+        SetupStep::ApiKey => {
+            let masked = "•".repeat(app.setup.api_key_input.chars().count());
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "Anthropic API key",
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("› ", Style::default().fg(ACCENT)),
+                    Span::raw(masked),
+                    Span::styled("█", Style::default().fg(ACCENT)),
+                ]),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Paste your API key and press Enter.",
+                    Style::default().fg(MUTED),
+                )),
+            ])
+        }
+        SetupStep::PermissionLevel => {
+            let mut text = vec![
+                Line::from(Span::styled(
+                    "Default permission level",
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+            ];
+            for (i, level) in PERMISSION_LEVELS.iter().enumerate() {
+                let level = *level;
+                let selected = i == app.setup.level_index;
+                let color = level_color(level);
+                let marker = if selected { "› " } else { "  " };
+                let style = if selected {
+                    Style::default()
+                        .fg(color)
+                        .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+                } else {
+                    Style::default().fg(color)
+                };
+                text.push(Line::from(Span::styled(format!("{marker}{level}"), style)));
+                text.push(Line::from(Span::styled(
+                    format!("    {}", level_description(level)),
+                    Style::default().fg(MUTED),
+                )));
+            }
+            text.push(Line::from(""));
+            text.push(Line::from(Span::styled(
+                "Up/Down to choose, Enter to confirm.",
+                Style::default().fg(MUTED),
+            )));
+            Paragraph::new(text)
+        }
+        SetupStep::Workspace => {
+            let path_active = !app.setup.editing_workspace_name;
+            let field_style = |active: bool| {
+                if active {
+                    Style::default().fg(ACCENT)
+                } else {
+                    Style::default().fg(MUTED)
+                }
+            };
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "Workspace (optional)",
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("path  › ", field_style(path_active)),
+                    Span::raw(app.setup.workspace_path_input.clone()),
+                ]),
+                Line::from(vec![
+                    Span::styled("name  › ", field_style(!path_active)),
+                    Span::raw(app.setup.workspace_name_input.clone()),
+                ]),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Tab to switch field, Enter to create (empty path to skip), Esc to skip.",
+                    Style::default().fg(MUTED),
+                )),
+            ])
+        }
+        SetupStep::Done => Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "✓ Setup complete",
+                Style::default().fg(SUCCESS).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Press any key to open the dashboard.",
+                Style::default().fg(MUTED),
+            )),
+        ])
+        .alignment(Alignment::Center),
+    };
+
+    let title = match app.setup.step {
+        SetupStep::ApiKey => "Step 1 of 3",
+        SetupStep::PermissionLevel => "Step 2 of 3",
+        SetupStep::Workspace => "Step 3 of 3",
+        SetupStep::Done => "Ready",
+    };
+    frame.render_widget(body.block(panel_focused(title)), chunks[3]);
+    let status_style = if app.status.is_empty() {
+        Style::default().fg(MUTED)
+    } else {
+        Style::default().fg(WARNING)
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(app.status.clone(), status_style)).alignment(Alignment::Center),
+        chunks[4],
+    );
 }
 
 fn severity_color(severity: crate::health::Severity) -> Color {
@@ -518,13 +721,16 @@ fn draw_dashboard(frame: &mut ratatui::Frame, app: &App) {
         .as_ref()
         .map(|u| (u.percent(), format!("{}/{} tokens", u.used, u.window)))
         .unwrap_or((0, "no active session".to_string()));
+    let gauge_color = if usage.0 >= 90 {
+        DANGER
+    } else if usage.0 >= 70 {
+        WARNING
+    } else {
+        SUCCESS
+    };
     let gauge = Gauge::default()
-        .block(
-            Block::default()
-                .title("Token consumption")
-                .borders(Borders::ALL),
-        )
-        .gauge_style(Style::default().fg(Color::Cyan))
+        .block(panel("Token consumption"))
+        .gauge_style(Style::default().fg(gauge_color))
         .percent(u16::from(usage.0))
         .label(usage.1);
     frame.render_widget(gauge, rows[1]);
@@ -552,10 +758,7 @@ fn draw_dashboard(frame: &mut ratatui::Frame, app: &App) {
             ))
         })
         .collect();
-    frame.render_widget(
-        List::new(sessions).block(Block::default().title("Sessions").borders(Borders::ALL)),
-        columns[0],
-    );
+    frame.render_widget(List::new(sessions).block(panel("Sessions")), columns[0]);
 
     let mut workspace_items: Vec<ListItem> = app
         .snapshot
@@ -576,8 +779,7 @@ fn draw_dashboard(frame: &mut ratatui::Frame, app: &App) {
         workspace_items.push(ListItem::new("(no workspaces registered)"));
     }
     frame.render_widget(
-        List::new(workspace_items)
-            .block(Block::default().title("Workspaces").borders(Borders::ALL)),
+        List::new(workspace_items).block(panel("Workspaces")),
         columns[1],
     );
 
@@ -599,7 +801,7 @@ fn draw_dashboard(frame: &mut ratatui::Frame, app: &App) {
         })
         .collect();
     frame.render_widget(
-        List::new(health_items).block(Block::default().title("Health check").borders(Borders::ALL)),
+        List::new(health_items).block(panel("Health check")),
         columns[2],
     );
 
@@ -611,16 +813,15 @@ fn draw_dashboard(frame: &mut ratatui::Frame, app: &App) {
         .map(|line| ListItem::new(line.clone()))
         .collect();
     frame.render_widget(
-        List::new(log_items).block(
-            Block::default()
-                .title("Operation log (live)")
-                .borders(Borders::ALL),
-        ),
+        List::new(log_items).block(panel("Operation log (live)")),
         rows[3],
     );
 
     frame.render_widget(
-        Paragraph::new("1: dashboard  2: settings  r: refresh now  q: quit"),
+        Paragraph::new(Span::styled(
+            "1: dashboard  2: settings  r: refresh now  q: quit",
+            Style::default().fg(MUTED),
+        )),
         rows[4],
     );
 }
@@ -638,14 +839,23 @@ fn tab_bar(active: Screen) -> Paragraph<'static> {
         if is_active {
             Span::styled(
                 format!(" {label} "),
-                Style::default().add_modifier(Modifier::REVERSED),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(ACCENT)
+                    .add_modifier(Modifier::BOLD),
             )
         } else {
-            Span::raw(format!(" {label} "))
+            Span::styled(format!(" {label} "), Style::default().fg(MUTED))
         }
     };
     Paragraph::new(Line::from(vec![
+        Span::styled(
+            " OPEN STRING ",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
         mk("1:Dashboard", active == Screen::Dashboard),
+        Span::raw(" "),
         mk("2:Settings", active == Screen::Settings),
     ]))
 }
@@ -664,6 +874,11 @@ fn draw_settings(frame: &mut ratatui::Frame, app: &App) {
 
     frame.render_widget(tab_bar(Screen::Settings), rows[0]);
 
+    let auth_color = if app.snapshot.auth_configured {
+        SUCCESS
+    } else {
+        MUTED
+    };
     let auth_line = if app.snapshot.auth_configured {
         "Anthropic API key: configured"
     } else {
@@ -671,13 +886,22 @@ fn draw_settings(frame: &mut ratatui::Frame, app: &App) {
     };
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(format!(
-                "Permission level: {}  (press p to cycle)",
-                app.snapshot.permission_level
-            )),
-            Line::from(format!("{auth_line}  (press l to log out)")),
+            Line::from(vec![
+                Span::raw("Permission level: "),
+                Span::styled(
+                    app.snapshot.permission_level.to_string(),
+                    Style::default()
+                        .fg(level_color(app.snapshot.permission_level))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("  (press p to cycle)", Style::default().fg(MUTED)),
+            ]),
+            Line::from(vec![
+                Span::styled(auth_line, Style::default().fg(auth_color)),
+                Span::styled("  (press l to log out)", Style::default().fg(MUTED)),
+            ]),
         ])
-        .block(Block::default().title("Account").borders(Borders::ALL)),
+        .block(panel("Account")),
         rows[1],
     );
 
@@ -693,29 +917,40 @@ fn draw_settings(frame: &mut ratatui::Frame, app: &App) {
         .enumerate()
         .map(|(i, ext)| {
             let marker = if i == app.selected_extension {
-                "> "
+                "› "
             } else {
                 "  "
             };
+            let state_color = if ext.enabled { SUCCESS } else { MUTED };
             let state = if ext.enabled { "enabled" } else { "disabled" };
             let requirement = ext
                 .required_permission_level
                 .map(|level| format!(", requires {level}"))
                 .unwrap_or_default();
-            ListItem::new(format!(
-                "{marker}{} [{state}]: {} {}{requirement}",
-                ext.name,
-                ext.command,
-                ext.args.join(" ")
-            ))
+            let line = Line::from(vec![
+                Span::raw(marker),
+                Span::styled(
+                    ext.name.clone(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" ["),
+                Span::styled(state, Style::default().fg(state_color)),
+                Span::raw(format!(
+                    "]: {} {}{requirement}",
+                    ext.command,
+                    ext.args.join(" ")
+                )),
+            ]);
+            let item = ListItem::new(line);
+            if i == app.selected_extension {
+                item.style(Style::default().add_modifier(Modifier::REVERSED))
+            } else {
+                item
+            }
         })
         .collect();
     frame.render_widget(
-        List::new(items).block(
-            Block::default()
-                .title("Extensions (e/x/Up/Down)")
-                .borders(Borders::ALL),
-        ),
+        List::new(items).block(panel("Extensions (e/x/Up/Down)")),
         settings_columns[0],
     );
 
@@ -726,15 +961,18 @@ fn draw_settings(frame: &mut ratatui::Frame, app: &App) {
         .map(|skill| ListItem::new(format!("{}: {}", skill.name, skill.description)))
         .collect();
     frame.render_widget(
-        List::new(skill_items).block(Block::default().title("SKILLS").borders(Borders::ALL)),
+        List::new(skill_items).block(panel("SKILLS")),
         settings_columns[1],
     );
 
     frame.render_widget(
-        Paragraph::new(format!(
-            "{}  |  1: dashboard  e: enable/disable  x: remove  p: cycle level  l: logout  q: quit",
-            app.status
-        )),
+        Paragraph::new(Line::from(vec![
+            Span::styled(app.status.clone(), Style::default().fg(WARNING)),
+            Span::styled(
+                "  |  1: dashboard  e: enable/disable  x: remove  p: cycle level  l: logout  q: quit",
+                Style::default().fg(MUTED),
+            ),
+        ])),
         rows[3],
     );
 }
