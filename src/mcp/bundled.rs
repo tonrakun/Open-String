@@ -46,8 +46,14 @@ pub fn is_available() -> bool {
 /// than a third-party one. Backs both 5.3's per-call sandboxing (only
 /// non-bundled tool calls go through the extra permission gate) and 5.4's
 /// "信頼できないソース" warning shown before a new Extension is connected.
+/// The built-in `extension install` catalog (5.3) is curated by Open
+/// String itself the same way t0k3n-mcp is, so it's trusted too; a local
+/// catalog file's entries are not, since nothing vets those.
 pub fn is_trusted_extension_name(name: &str) -> bool {
     name == T0K3N_EXTENSION_NAME
+        || super::catalog::builtin_catalog()
+            .iter()
+            .any(|e| e.name == name)
 }
 
 /// The command Open String should launch t0k3n-mcp with: its known

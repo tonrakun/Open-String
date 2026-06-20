@@ -293,7 +293,10 @@ mod tests {
 
         let rotated = rotated_path_for(&path);
         assert!(rotated.is_file(), "oversized log should be rotated");
-        assert_eq!(std::fs::metadata(&rotated).unwrap().len(), MAX_LOG_BYTES + 1);
+        assert_eq!(
+            std::fs::metadata(&rotated).unwrap().len(),
+            MAX_LOG_BYTES + 1
+        );
         let active = std::fs::read_to_string(&path).unwrap();
         assert!(active.contains("after rotation"));
         assert!(active.len() < (MAX_LOG_BYTES + 1) as usize);

@@ -96,6 +96,7 @@ open-string gui   # ローカルWeb GUI（既定ブラウザで開く）
 | `workspace create / list / remove / switch / status` | ワークスペースの作成・一覧・削除・切り替え |
 | `session list / end` | セッションの一覧・終了 |
 | `extension list / add / remove / enable / disable / check / lifecycle / check-updates` | MCPサーバー/SKILLSの管理 |
+| `extension catalog / install <name>` | 厳選済みの既知MCPサーバー一覧表示・ワンコマンド導入（ローカルカタログファイルで独自エントリ追加可） |
 | `agent run-task / run-tasks / prompt-versions / ctx-config` | Sub Agentへの単発・並列タスク実行、システムプロンプト断片の確認、Ctx Agent設定 |
 | `chat` | Mediatorとの自然言語対話ループ（`--resume <session-id>`でセッション復元） |
 | `health [--watch] [--interval-secs N] [--log-file PATH]` | 起動時/任意実行のセルフヘルスチェック（`--watch`で定期実行ループ） |

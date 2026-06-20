@@ -291,6 +291,7 @@ Mediatorは常駐かつユーザーと長時間対話し続けるため、Sub Ag
 - [x] 外部MCPサーバーの追加・削除UI（CLIの`extension add`/`extension remove`、および5.4のMediator経由の自然言語導入フローの双方から実行可能）
 - [x] 互換性検証（Extension側のプロトコルバージョンチェック）（`McpClient`が`initialize`応答の`protocolVersion`を記録し、`is_protocol_compatible`でCore側の要求バージョンと比較。`health::run_health_check`は不一致をFatalではなくWarningとして扱い、Core本体の動作は継続。`extension check`/Mediator導入フローでも同じ判定を再利用）
 - [x] サードパーティExtensionのサンドボックス化検討（権限レベルとの統合）（`McpToolSource.trusted`（bundled t0k3n以外はfalse）を導入し、`ClaudeTaskExecutor`がread-onlyタスクでは未信頼ツールを一切提示せず、それ以外のタスクでも呼び出し毎に`classify_danger`+`PermissionLevel::decide`を通し、`AutoAllow`以外は使い捨てSub Agentが確認を取れないため呼び出し自体を拒否）
+- [x] 既知の（キュレーションされた）サードパーティExtensionをワンコマンドで導入できるカタログ機能（`src/mcp/catalog.rs`。組み込みの厳選リスト（公式`modelcontextprotocol/servers`リファレンス実装3件: memory/sequential-thinking/filesystem、いずれも`npx -y <package>`経由）に加え、`.open-string/extension_catalog.json`（ワークスペース優先、なければグローバル）でユーザー独自のエントリを追加登録できる。`open-string extension catalog`で一覧表示、`open-string extension install <name>`で`.mcp.json`へ追加し接続確認、失敗時は5.4の`apply_proposed_extension`と同じロールバックパターンで設定を復元。組み込みカタログのみ`is_trusted_extension_name`で信頼扱い、ローカルカタログのエントリは未信頼警告の対象。Windowsでは`npx`が`.cmd`シムのため`npx.cmd`に解決）
 
 ### 5.4 Mediator主導によるExtension動的導入（新規要件）
 - [x] ユーザーがMediatorに対し自然言語で「○○のMCPサーバーを使いたい」等を依頼した場合、Mediatorがその場でMCP設定（`.mcp.json`相当）を書き換えて導入できる仕組みを実装する（`propose_extension`ツールを介して`MediatorTurn::ProposeExtension`を返し、`chat`ループが`apply_proposed_extension`で`.mcp.json`に追記）

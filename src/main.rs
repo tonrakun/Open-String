@@ -343,6 +343,19 @@ enum ExtensionAction {
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
+    /// List installable Extensions: the built-in curated catalog plus any
+    /// entries from this workspace's local catalog file (5.3)
+    Catalog {
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Add a catalog entry to `.mcp.json` by name and verify it connects,
+    /// rolling back if it doesn't (5.3's one-command third-party install)
+    Install {
+        name: String,
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -702,6 +715,12 @@ fn main() {
             ),
             ExtensionAction::CheckUpdates { workspace } => {
                 extension_check_updates(resolve_workspace(workspace).as_deref())
+            }
+            ExtensionAction::Catalog { workspace } => {
+                extension_catalog(resolve_workspace(workspace).as_deref())
+            }
+            ExtensionAction::Install { name, workspace } => {
+                extension_install(resolve_workspace(workspace).as_deref(), &name)
             }
         },
         Command::Health {
@@ -1263,6 +1282,85 @@ fn extension_check_updates(workspace: Option<&std::path::Path>) -> Result<(), St
     } else {
         print_lifecycle_results(&results);
     }
+    Ok(())
+}
+
+fn extension_catalog(workspace: Option<&std::path::Path>) -> Result<(), String> {
+    let builtin = mcp::builtin_catalog();
+    println!("Built-in:");
+    for entry in &builtin {
+        println!(
+            "  {} ({} {}) - {}",
+            entry.name,
+            entry.command,
+            entry.args.join(" "),
+            entry.description
+        );
+    }
+    let local = mcp::local_catalog(workspace);
+    if local.is_empty() {
+        println!(
+            "Local (none; add entries to {})",
+            mcp::config_path(workspace)
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join(mcp::LOCAL_CATALOG_FILE)
+                .display()
+        );
+    } else {
+        println!("Local:");
+        for entry in &local {
+            println!(
+                "  {} ({} {}) - {}",
+                entry.name,
+                entry.command,
+                entry.args.join(" "),
+                entry.description
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `open-string extension install <name>` (5.3): resolves `name` against
+/// the catalog, adds it to `.mcp.json`, and verifies it actually connects
+/// -- rolling the config change back on failure, mirroring 5.4's
+/// `apply_proposed_extension` rollback-on-failure pattern.
+fn extension_install(workspace: Option<&std::path::Path>, name: &str) -> Result<(), String> {
+    let entry = mcp::find_catalog_entry(name, workspace).ok_or_else(|| {
+        format!("no extension named \"{name}\" in the catalog; run `extension catalog` to see what's available")
+    })?;
+
+    let mut config = mcp::load(workspace)?;
+    config
+        .mcp_servers
+        .insert(entry.name.clone(), entry.to_server_config());
+    mcp::save(workspace, &config)?;
+
+    let client = match mcp::McpClient::connect(&entry.command, &entry.args) {
+        Ok(client) => client,
+        Err(e) => {
+            let _ = extension_remove(workspace, &entry.name);
+            return Err(format!(
+                "failed to connect \"{}\" ({e}); rolled back the config change",
+                entry.name
+            ));
+        }
+    };
+    let warning = if client.is_protocol_compatible() {
+        String::new()
+    } else {
+        format!(
+            " (warning: negotiated protocol version {} differs from Core's {})",
+            client.negotiated_protocol_version().unwrap_or("unknown"),
+            mcp::McpClient::supported_protocol_version()
+        )
+    };
+    println!(
+        "{}Installed Extension \"{}\".{warning}",
+        untrusted_source_warning(&entry.name),
+        entry.name
+    );
     Ok(())
 }
 
