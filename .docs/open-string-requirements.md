@@ -267,7 +267,7 @@ Mediatorは常駐かつユーザーと長時間対話し続けるため、Sub Ag
 ### 5.1 Extension基盤
 - [x] MCP準拠の外部サーバー接続インターフェース実装（`McpClient`、`src/mcp/client.rs`。stdio上のJSON-RPC 2.0でinitializeハンドシェイク・tools/list・tools/callを実装。I/Oを`Box<dyn Write/BufRead>`で抽象化し、実プロセスを起動せずプロトコル層を単体テスト可能にした）
 - [x] SKILLS形式の拡張機能読み込み機構（`skills::load_skills`、`src/skills.rs`。`---`区切りのYAMLフロントマター（name/description）+本文を持つMarkdownファイルをワークスペースの`.open-string/skills/`から読み込み）
-- [ ] Extension一覧管理・有効/無効切り替えUI（TUI/GUI連携）（CLI（`open-string extension list/enable/disable`）は実装済み。TUI/GUI側のUI連携は4.3実装時に対応）
+- [x] Extension一覧管理・有効/無効切り替えUI（TUI/GUI連携）（CLI（`open-string extension list/enable/disable`）に加え、4.3で実装したTUI設定画面（`e`/`x`キー）・GUI設定画面（Extensionテーブルの有効化/無効化・削除ボタン）からも操作可能）
 - [x] Extensionごとの権限スコープ設定（Extensionが要求する権限とCoreの権限レベルの整合性チェック）（`McpServerConfig::required_permission_level`+`is_compatible_with`、`src/mcp/config.rs`。`open-string extension check`が接続前にCoreの現在権限レベルとの整合性を検証）
 
 ### 5.2 公式Extension: t0k3n-mcp バンドル
@@ -295,7 +295,7 @@ Mediatorは常駐かつユーザーと長時間対話し続けるため、Sub Ag
 - [ ] Mediator/Sub Agent/Ctx Agentの動作に関わるコンフィグ（権限レベル設定、コンテキスト圧縮の閾値、システムプロンプト断片等）についても同様にホットリロード対応とする（権限レベルとExtension由来のシステムプロンプト断片は対応済み。コンテキスト圧縮閾値（`CtxAgentConfig`）はCLIオプションのみで永続設定ファイルが無く、ホットリロード対象として未対応）
 - [x] ホットリロード発生時、実行中のSub Agent/Ctx Agentには影響を与えない（実行中タスクは旧設定のまま完走させ、次回生成以降から新設定を適用する）（`chat`のメインループの先頭、ターン境界でのみ`reload_chat_runtime`を呼ぶため、実行中のディスパッチには影響しない）
 - [x] 設定ファイルの変更監視（ファイルシステムイベント検知）と、不正/破損した設定が読み込まれた場合のフォールバック（直前の正常な設定を保持して復元）（`hotreload::ConfigWatcher`が`notify`でファイル変更を検知。`reload_chat_runtime`は`mcp::load`/`store.load`が失敗した場合`None`を返し、呼び出し側は既存の`executor`/`permission_level`を保持したままフォールバック）
-- [ ] ホットリロードの成功/失敗をTUI/GUIダッシュボードに通知（4.3と連携）（`FileHotReloadLog`に記録は実装済みだが、TUI/GUIダッシュボード自体（4.3）が未実装のため表示は未対応）
+- [x] ホットリロードの成功/失敗をTUI/GUIダッシュボードに通知（4.3と連携）（`health::check_hot_reload`が`FileHotReloadLog`の直近結果をヘルスチェック項目として`HealthReport`に含め、4.3のTUI/GUIダッシュボードはいずれも`HealthReport`の全項目（hot_reloadを含む）を表示するため、追加の連携実装なしで通知される）
 - [x] ホットリロード処理自体もセルフヘルスチェック層の監視対象に含める（4.6と連携）（`health::check_hot_reload`が`FileHotReloadLog`の直近結果を`HealthCheckItem`として`run_health_check`に追加）
 
 ---
