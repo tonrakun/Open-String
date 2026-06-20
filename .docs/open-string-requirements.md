@@ -259,7 +259,7 @@ Mediatorは常駐かつユーザーと長時間対話し続けるため、Sub Ag
 - [x] 初めてユーザーが本ソフトをインストールするときは環境に合わせたps1・shスクリプトを実行する（`scripts/install.ps1`（Windows）・`scripts/install.sh`（macOS/Linux）。リリースアーカイブ内で実行する前提のスタンドアロンスクリプト。各ステップ（バイナリ検出・ディレクトリ作成・コピー・PATH追加・`--version`によるインストール後確認）を番号付き・色付きで表示し、完了時にインストール先とバージョンを要約表示する設計に強化）
 - [x] スクリプトはPATHの追加や必要なフォルダの作成等を自動で行う（インストール先ディレクトリ・Core設定ディレクトリを作成し、未登録の場合のみユーザーPATH（Windowsはレジストリ経由の永続PATH、Unixはshell rcファイル）に追記。冪等性を確認済み）
 - [x] これらのスクリプト郡はGitHub Actionsによって作られたReleaseに同袍して公開される（`.github/workflows/release.yml`。`v*`タグ push時にWindows/macOS/Linux向けにビルドし、各バイナリと対応するインストールスクリプトをzip/tar.gzに同梱してGitHub Releaseへ添付。スクリプトはアーカイブ内同梱のみとし、単体アセットとしては同封しない）
-- [x] 各OS向けバイナリそのものも、zip/tar.gzアーカイブとは別に単体アセットとしてReleaseへ同封する（インストーラを介さず直接ダウンロード・自己更新用に取得できるようにするため）（`release.yml`のPackageステップで`open-string-{windows,macos,linux}-x86_64[.exe]`を生成し、アーカイブと並行してアップロード・Releaseへ添付）
+- [x] 各OS向けバイナリそのものも、zip/tar.gzアーカイブとは別に単体アセットとしてReleaseへ同封する（インストーラを介さず直接ダウンロード・自己更新用に取得できるようにするため）（`release.yml`のPackageステップで`open-string-windows-x86_64.exe`/`open-string-macos-aarch64`/`open-string-linux-x86_64`を生成し、アーカイブと並行してアップロード・Releaseへ添付。macOSは`macos-latest`ランナーがApple Silicon（aarch64）でネイティブビルドするため、x86_64ではなくaarch64として命名）
 
 #### 4.9 セルフアップデート（新規要件）
 - [x] Core自身の新バージョンの有無をGitHub Releasesに対してチェックできる（`open-string update --check`。`src/selfupdate.rs::check_for_update`がGitHub Releases APIの`releases/latest`を取得し、`CARGO_PKG_VERSION`と比較）

@@ -16,7 +16,10 @@ jobs:
           - os: windows-latest
             asset_name: open-string-windows-x86_64
           - os: macos-latest
-            asset_name: open-string-macos-x86_64
+            # GitHub-hosted macos-latest runners build natively for
+            # aarch64 (Apple Silicon); name the asset accordingly so it
+            # isn't mislabeled as an Intel binary.
+            asset_name: open-string-macos-aarch64
           - os: ubuntu-latest
             asset_name: open-string-linux-x86_64
     runs-on: ${{ matrix.os }}

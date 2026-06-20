@@ -29,16 +29,22 @@ struct ReleaseAsset {
     browser_download_url: String,
 }
 
-/// Maps the running OS/arch to the standalone binary asset name published
-/// by `.github/workflows/release.yml`. Only the platforms that workflow
-/// actually builds are recognized.
-fn platform_asset_name() -> Option<&'static str> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
+/// Maps an OS/arch pair to the standalone binary asset name published by
+/// `.github/workflows/release.yml`. Only the platforms that workflow
+/// actually builds are recognized. macOS's GitHub-hosted `macos-latest`
+/// runner builds natively for `aarch64` (Apple Silicon), not `x86_64`, so
+/// that's the only Mac arch published; Windows/Linux runners stay `x86_64`.
+fn asset_name_for(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
         ("windows", "x86_64") => Some("open-string-windows-x86_64.exe"),
-        ("macos", "x86_64") => Some("open-string-macos-x86_64"),
+        ("macos", "aarch64") => Some("open-string-macos-aarch64"),
         ("linux", "x86_64") => Some("open-string-linux-x86_64"),
         _ => None,
     }
+}
+
+fn platform_asset_name() -> Option<&'static str> {
+    asset_name_for(std::env::consts::OS, std::env::consts::ARCH)
 }
 
 /// Parses a `major.minor.patch` version string (with or without a leading
@@ -182,18 +188,24 @@ mod tests {
     }
 
     #[test]
-    fn platform_asset_name_matches_release_workflow_naming() {
-        // At least confirms the format stays in lockstep with
-        // `.github/workflows/release.yml`'s `asset_name` matrix entries
-        // even though only one of these branches runs per host OS.
-        #[cfg(target_os = "windows")]
+    fn asset_name_for_matches_release_workflow_naming() {
+        // Exercised against literal (os, arch) pairs rather than gated on
+        // `target_os`/`target_arch`, so this doesn't silently go stale the
+        // next time a GitHub-hosted runner's default arch changes (as
+        // happened when `macos-latest` moved to Apple Silicon).
         assert_eq!(
-            platform_asset_name(),
+            asset_name_for("windows", "x86_64"),
             Some("open-string-windows-x86_64.exe")
         );
-        #[cfg(target_os = "macos")]
-        assert_eq!(platform_asset_name(), Some("open-string-macos-x86_64"));
-        #[cfg(target_os = "linux")]
-        assert_eq!(platform_asset_name(), Some("open-string-linux-x86_64"));
+        assert_eq!(
+            asset_name_for("macos", "aarch64"),
+            Some("open-string-macos-aarch64")
+        );
+        assert_eq!(
+            asset_name_for("linux", "x86_64"),
+            Some("open-string-linux-x86_64")
+        );
+        assert_eq!(asset_name_for("macos", "x86_64"), None);
+        assert_eq!(asset_name_for("linux", "aarch64"), None);
     }
 }
