@@ -98,7 +98,7 @@ open-string gui   # ローカルWeb GUI（既定ブラウザで開く）
 | `extension list / add / remove / enable / disable / check / lifecycle / check-updates` | MCPサーバー/SKILLSの管理 |
 | `agent run-task / run-tasks / prompt-versions / ctx-config` | Sub Agentへの単発・並列タスク実行、システムプロンプト断片の確認、Ctx Agent設定 |
 | `chat` | Mediatorとの自然言語対話ループ（`--resume <session-id>`でセッション復元） |
-| `health` | 起動時/任意実行のセルフヘルスチェック |
+| `health [--watch] [--interval-secs N] [--log-file PATH]` | 起動時/任意実行のセルフヘルスチェック（`--watch`で定期実行ループ） |
 | `tui` / `gui` | ターミナルUI / ローカルWeb GUIの起動 |
 | `gateway set-token / discord / telegram / line` | チャットゲートウェイのトークン登録とBot起動 |
 | `update [--check] [--yes]` | GitHub Releasesの最新バージョン確認・実行中バイナリの自己更新 |

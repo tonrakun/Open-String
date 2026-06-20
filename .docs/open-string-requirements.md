@@ -200,7 +200,7 @@ Open String（オープン・ストリング）。「糸」「つながり」「
 ### 4.6 セルフヘルスチェック・自己修復（新規要件）
 
 - [x] Core自身の起動時ヘルスチェック（バイナリ整合性、設定ファイル整合性、Extension接続状態）（`health::run_health_check`、`src/health.rs`。`chat`起動時に自動実行し、`open-string health`で単独実行も可能）
-- [x] 定期ヘルスチェックのスケジューリング（常駐デーモンがないため、`chat`起動など既存の実行タイミングに相乗りする設計とした。OSスケジューラ（cron/Task Scheduler）連携による真の定期実行は未実装）
+- [x] 定期ヘルスチェックのスケジューリング（常駐デーモンがないため、`chat`起動など既存の実行タイミングに相乗りする設計に加え、`open-string health --watch [--interval-secs N] [--log-file PATH]`でフォアグラウンドの定期実行ループを提供。実体としての常駐化（systemd/Task Scheduler等への登録）は運用者に委ねる）
 - [x] エラー検知時の自動分類（致命的/警告/情報）（`health::Severity::{Fatal,Warning,Info}`）
 - [x] 自動リトライ機構（一時的なネットワーク/Extension接続エラー等）（Extension接続チェックは`EXTENSION_CONNECT_ATTEMPTS`回まで再試行、`src/health.rs`）
 - [x] 自己修正ロジック（設定ファイルの破損検知時のデフォルト復元、依存Extensionの再インストール試行等）（`.mcp.json`破損時は破損ファイルを`.corrupt`にバックアップしデフォルト復元。Extensionの再インストール試行はOS依存のため対象外）

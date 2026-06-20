@@ -92,6 +92,18 @@ enum Command {
     Health {
         #[arg(long)]
         workspace: Option<PathBuf>,
+        /// Keep re-running the health check on an interval instead of
+        /// exiting after one run (Ctrl+C to stop); there is still no
+        /// background daemon, so this only covers a process you keep
+        /// running yourself (foreground, systemd, Task Scheduler, etc.)
+        #[arg(long)]
+        watch: bool,
+        /// Seconds to sleep between checks when `--watch` is set
+        #[arg(long, default_value_t = 300)]
+        interval_secs: u64,
+        /// Append each watch cycle's report to this file instead of stdout
+        #[arg(long)]
+        log_file: Option<PathBuf>,
     },
     /// Start an interactive natural-language session with the Mediator
     /// (4.7.1): free-form requests are interpreted turn by turn, decomposed
@@ -666,10 +678,25 @@ fn main() {
                 extension_check_updates(resolve_workspace(workspace).as_deref())
             }
         },
-        Command::Health { workspace } => {
+        Command::Health {
+            workspace,
+            watch,
+            interval_secs,
+            log_file,
+        } => {
             let workspace = resolve_workspace(workspace);
-            permission_store_for(workspace.as_deref())
-                .and_then(|store| health_check_command(store.as_ref(), workspace.as_deref()))
+            permission_store_for(workspace.as_deref()).and_then(|store| {
+                if watch {
+                    health_watch_command(
+                        store.as_ref(),
+                        workspace.as_deref(),
+                        interval_secs,
+                        log_file.as_deref(),
+                    )
+                } else {
+                    health_check_command(store.as_ref(), workspace.as_deref())
+                }
+            })
         }
         Command::Chat {
             workspace,
@@ -1290,16 +1317,25 @@ fn audit_export(
     }
 }
 
+fn render_health_report(report: &health::HealthReport) -> String {
+    report
+        .items
+        .iter()
+        .map(|item| {
+            let label = match item.severity {
+                health::Severity::Fatal => "FATAL",
+                health::Severity::Warning => "warning",
+                health::Severity::Info => "ok",
+            };
+            let repaired = if item.repaired { " [repaired]" } else { "" };
+            format!("[{label}] {}: {}{repaired}", item.name, item.message)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn print_health_report(report: &health::HealthReport) {
-    for item in &report.items {
-        let label = match item.severity {
-            health::Severity::Fatal => "FATAL",
-            health::Severity::Warning => "warning",
-            health::Severity::Info => "ok",
-        };
-        let repaired = if item.repaired { " [repaired]" } else { "" };
-        println!("[{label}] {}: {}{repaired}", item.name, item.message);
-    }
+    println!("{}", render_health_report(report));
 }
 
 fn health_check_command(
@@ -1317,6 +1353,42 @@ fn health_check_command(
         );
     }
     Ok(())
+}
+
+/// `health --watch`: re-runs the same check `health_check_command` does on
+/// a fixed interval until interrupted (Ctrl+C). There is still no
+/// background daemon (4.6's known limitation) -- this only covers a
+/// process the operator keeps running themselves, whether in the
+/// foreground or under systemd/Task Scheduler.
+fn health_watch_command(
+    store: &dyn PermissionStore,
+    workspace: Option<&std::path::Path>,
+    interval_secs: u64,
+    log_file: Option<&std::path::Path>,
+) -> Result<(), String> {
+    loop {
+        let level = store
+            .load()
+            .map_err(|e| format!("failed to read permission level: {e}"))?;
+        let report = health::run_health_check(workspace, level);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let rendered = format!("--- {timestamp} ---\n{}", render_health_report(&report));
+        match log_file {
+            Some(path) => {
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .map_err(|e| e.to_string())?;
+                writeln!(file, "{rendered}").map_err(|e| e.to_string())?;
+            }
+            None => println!("{rendered}"),
+        }
+        std::thread::sleep(std::time::Duration::from_secs(interval_secs));
+    }
 }
 
 fn permission_status(store: &dyn PermissionStore) -> Result<(), String> {
